@@ -12,8 +12,9 @@ IGNORABLE_KEYWORDS = ['auto', 'register', 'static',
                       'const', 'volatile']
 BINARY_OPERATORS = ["+", "/", "%", ">>", "<<", "|", "^", "->", ".", "?", ":"]
 UNARY_OPERATORS = ["--", "++"]
+LOGICAL_OPERATORS = ["&&", "||", "<", ">", "<=", ">=", "=="]
 ASSIGNMENTS = ["=", "%=", "+=", "-=", "*=", "/=", "|=", "&=", "<<=", ">>="]
-ALL_OPS = BINARY_OPERATORS + UNARY_OPERATORS + ASSIGNMENTS
+ALL_OPS = BINARY_OPERATORS + UNARY_OPERATORS + ASSIGNMENTS + LOGICAL_OPERATORS
 #by the time we use this one, there's no natural \t chars left
 COMMENT = '\t'
 
@@ -23,8 +24,8 @@ class Type(object):
     (   ERROR_TYPE, DEFINE, INCLUDE, COMMENT, NEWLINE, COMMA, LBRACE, RBRACE,
         LPAREN, RPAREN, MINUS, BINARY_OPERATOR, LOGICAL_OPERATOR, STAR,
         AMPERSAND, TYPE, CREMENT, IGNORE, KW_EXTERN, BREAK, FOR, SWITCH, CASE,
-        STRUCT, CONTINUE, TYPEDEF
-    ) = range(26)
+        STRUCT, CONTINUE, TYPEDEF, RETURN
+    ) = range(27)
 
 class Fragment(object):
     """ This is where we start getting funky with building the structure of
@@ -102,7 +103,7 @@ class Word(object):
             self.type = Type.MINUS
         elif line in BINARY_OPERATORS:
             self.type = Type.BINARY_OPERATOR
-        elif line in ["&&", "||", "<", ">", "<=", ">=", "=="]:
+        elif line in LOGICAL_OPERATORS:
             self.type = Type.LOGICAL_OPERATOR
         elif line == "*":
             self.type = Type.STAR
@@ -130,6 +131,8 @@ class Word(object):
             self.type = Type.CONTINUE
         elif line == "typedef":
             self.type = Type.TYPEDEF
+        elif line == "return":
+            self.type = Type.RETURN
 
     def get_type(self):
         return self.type
@@ -167,6 +170,7 @@ class Tokeniser(object):
     def end_word(self):
         if self.current_word.empty():
             return
+        self.current_word.finalise()
         self.tokens.append(self.current_word)
         self.current_word = Word()
         self.in_operator = False
