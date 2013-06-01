@@ -26,8 +26,9 @@ class Type(object):
     (   ERROR_TYPE, DEFINE, INCLUDE, COMMENT, NEWLINE, COMMA, LBRACE, RBRACE,
         LPAREN, RPAREN, MINUS, BINARY_OPERATOR, LOGICAL_OPERATOR, STAR,
         AMPERSAND, TYPE, CREMENT, IGNORE, KW_EXTERN, BREAK, FOR, SWITCH, CASE,
-        STRUCT, CONTINUE, TYPEDEF, RETURN, UNKNOWN, CONSTANT, WHILE, DO
-    ) = range(31)
+        STRUCT, CONTINUE, TYPEDEF, RETURN, UNKNOWN, CONSTANT, WHILE, DO,
+        SEMICOLON, COLON, TERNARY, ASSIGNMENT
+    ) = range(35)
 
 class Fragment(object):
     """ This is where we start getting funky with building the structure of
@@ -90,12 +91,18 @@ class Word(object):
             self.type = Type.INCLUDE
         elif line == "\t":
             self.type = Type.COMMENT
+        elif line == ";":
+            self.type = Type.SEMICOLON
         elif line == "\n":
             self.type = Type.NEWLINE
         elif line == ",":
             self.type = Type.COMMA
         elif line == "{":
             self.type = Type.LBRACE
+        elif line == "?":
+            self.type = Type.TERNARY
+        elif line == ":":
+            self.type = Type.COLON
         elif line == "}":
             self.type = Type.RBRACE
         elif line == "(":
@@ -189,7 +196,7 @@ class Tokeniser(object):
         self.in_char = False
         self.multi_char_op = False
 
-    def add_to_word(self, char, n):
+    def add_to_word(self, char):
         self.current_word.append(char, self.space_left, self.line_number,
                 self.current_word_start)
         self.space_left = 0
@@ -201,7 +208,7 @@ class Tokeniser(object):
             #step 0: if we were waiting for the second char in a "==" or
             # similar, grab it and move on already
             if self.multi_char_op:
-                self.add_to_word(c, n)
+                self.add_to_word(c)
                 #catch dem silly >>= and <<= ops
                 if self.current_word.get_string() + c + "=" in ASSIGNMENTS:
                     continue
@@ -211,7 +218,7 @@ class Tokeniser(object):
             if self.in_singleline_comment:
                 if c == '\n':
                     self.in_singleline_comment = False
-                    self.add_to_word(COMMENT, n)
+                    self.add_to_word(COMMENT)
                     self.end_word()
                 else:
                     continue
@@ -225,7 +232,7 @@ class Tokeniser(object):
                 #if we've reached the end of the comment
                 if self.multiline_comment == n:
                     self.multiline_comment = 0
-                    self.add_to_word(COMMENT, n)
+                    self.add_to_word(COMMENT)
                     self.end_word()
             #step 3: deal with newlines, ends the current word
             elif c == '\n':
@@ -235,12 +242,12 @@ class Tokeniser(object):
                 self.line_number += 1
                 self.line_start = n + 1
                 #...line AHYUK, AHYUK
-                self.add_to_word(c, n)
+                self.add_to_word(c)
                 self.end_word()
 
             #don't want to get caught interpreting chars in strings as real
             elif self.in_string:
-                self.add_to_word(c, n)
+                self.add_to_word(c)
                 #string ending
                 if c == '"':
                     #but not if it's escaped
@@ -253,7 +260,7 @@ class Tokeniser(object):
                         self.end_word()
             #that was fuuun, but it repeats with chars
             elif self.in_char:
-                self.add_to_word(c, n)
+                self.add_to_word(c)
                 #first: is it a '; second: are sneaky people involved
                 if c == "'" and megastring[n-1] != '\\':
                     self.end_word()
@@ -265,11 +272,11 @@ class Tokeniser(object):
             #catch the start of a string
             elif c == '"':
                 self.in_string = not self.in_string
-                self.add_to_word(c, n)
+                self.add_to_word(c)
             #or, for that matter, the start of a char
             elif c == "'":
                 self.in_char = not self.in_char
-                self.add_to_word(c, n)
+                self.add_to_word(c)
             #now we just have to catch the possible word seperators
             elif c in self.deal_breakers:
                 if c == "/" and megastring[n+1] == "*":
@@ -279,24 +286,24 @@ class Tokeniser(object):
                 elif c + megastring[n+1] in ALL_OPS:
                     self.multi_char_op = True
                     self.end_word()
-                    self.add_to_word(c, n)
+                    self.add_to_word(c)
                 #ennnnd of ze word
                 else:
                     self.end_word()
                     #only single character constructs remain, so add them and
                     #include "bad_jokes.h"
                     #... END THEM
-                    self.add_to_word(c, n)
+                    self.add_to_word(c)
                     self.end_word()
             else:
-                self.add_to_word(c, n)
+                self.add_to_word(c)
 
     def get_tokens(self):
         return self.tokens
 
 class Errors(object):
     (IF, ELSE, ELSEIF, RUNON, FUNCTION, GLOBALS, VARIABLE, TYPE,
-            DEFINE) = range(9)
+            DEFINE, MISSING, CLOSING) = range(11)
     """Everyone's favourite"""
     def __init__(self):
         self.naming_d = {}
@@ -310,13 +317,13 @@ class Errors(object):
     def naming(self, token, name_type):
         self.total += 1
         msg = "WHOOPS"
-        if name_type == Styler.TYPE:
+        if name_type == Errors.TYPE:
             msg = " misnamed, types should be NamedLikeThis"
-        elif name_type == Styler.FUNCTION:
+        elif name_type == Errors.FUNCTION:
             msg = " misnamed, functions should be named_like_this"
-        elif name_type == Styler.DEFINE:
+        elif name_type == Errors.DEFINE:
             msg = " misnamed, #defines should be NAMED_LIKE_THIS"
-        elif name_type == Styler.VARIABLE:
+        elif name_type == Errors.VARIABLE:
             msg = " misnamed, variables should be namedLikeThis"
         self.naming_d[token.get_line_number()] = "[NAMING] " + \
                 token.get_string() + msg
@@ -333,8 +340,9 @@ class Errors(object):
 
     def func_length(self, line_number, length):
         self.total += 1
-        self.func_length_d[line_number] = "[OVERALL] Function length of %d is \
-                over the maximum of 50" % length
+        self.func_length_d[line_number] = \
+                "[OVERALL] Function length of %d is over the maximum of 50" %\
+                        length
 
     def braces(self, token, error_type):
         self.total += 1
@@ -347,8 +355,10 @@ class Errors(object):
             msg = ", else if braces should look like: } else if (cond) {"
         elif error_type == Errors.RUNON:
             msg = ", braces should be the last character on the line"
-        self.braces[token.get_line_number()] = "[BRACES] at position " + \
-                token.get_position() + msg
+        elif error_type == Errors.MISSING:
+            msg = ", braces are required, even for single line blocks"
+        self.braces_d[token.get_line_number()] = \
+                "[BRACES] at position %d%s" % (token.get_position(), msg)
 
     def comments(self, line_number, error_type):
         self.total += 1
@@ -394,6 +404,7 @@ class Styler(object):
                 self.errors.line_length(line_number, len(line))
         self.infile.close()
         self.position = 0
+        self.depth = 0
         self.comments = {}
         #then the guts of it all
         tokeniser = Tokeniser(filename)
@@ -401,7 +412,7 @@ class Styler(object):
         self.current_token = self.tokens[self.position]
         try:
             self.process_globals(filename)
-        except IndexError as e:
+        except IndexError:
             #that'd be us finished
             pass
 
@@ -425,7 +436,7 @@ class Styler(object):
     def peek(self):
         try:
             return self.tokens[self.position + 1]
-        except IndexError as e:
+        except IndexError:
             return Word()
 
     def write_output_file(self, filename):
@@ -447,7 +458,7 @@ class Styler(object):
         expected_indent = 0 #at global level
         while True:
             token = self.current_token
-            self.check_whitespace(token, expected_indent);
+            self.check_whitespace(token, expected_indent)
             self.match()
             tokentype = token.get_type()
             #check for compiler directives that aren't #define
@@ -502,25 +513,106 @@ class Styler(object):
 
     def check_for(self):
         print "check_for(): not implemented"
+        while self.current_token.type != Type.RPAREN:
+            if self.current_token.type == Type.TYPE:
+                self.match()
+                self.check_declaration()
+            elif self.current_token.type == Type.SEMICOLON:
+                self.match()
+                self.check_whitespace(self.current_token, 1)
+            elif self.current_token.type == Type.UNKNOWN:
+                 #TODO maybe shouldn't, since it doesn't terminate with a  ;
+                self.check_expression()
+        self.match()
+        if self.current_token.type == Type.LBRACE:
+            self.check_whitespace(self.current_token, 1)
+            self.check_block()
+        else:
+            self.errors.braces(self.current_token, Errors.MISSING)
+            self.check_whitespace(self.current_token, (self.depth + 1) * 4)
+            self.check_statement()
 
     def check_while(self):
-        print "check_while(): not implemented"
+        # ensure it's a LPAREN
+        while self.current_token.type != Type.LPAREN:
+            print "check_while(): unexpected token: ", self.current_token
+            self.match()
+        # check spacing on the parenthesis
+        self.check_whitespace(self.current_token, 1)
+        self.match()
+        self.check_expression()
+        self.check_line_continuation()
+        while self.current_token.type != Type.RPAREN:
+            print "check_while(): unexpected token: ", self.current_token
+            self.match()
+        self.check_line_continuation()
+        while self.current_token.type != Type.LBRACE:
+            print "check_while(): unexpected token: ", self.current_token
+            self.match()
+        self.check_whitespace(self.current_token, 1)
+        self.match()
+        if self.current_token.type == Type.NEWLINE:
+            self.errors.braces(self.current_token, Errors.RUNON)
+            self.check_expression()
+        elif self.current_token.type == Type.LBRACE:
+            self.match()
+            self.check_block()
+        else:
+            print "check_while(): unexpected token: ", self.current_token
+
+    def check_line_continuation(self):
+        if self.current_token.type == Type.NEWLINE:
+            while self.current_token.type == Type.NEWLINE:
+                self.match()
+            #check the indentation of the continuation
+            self.check_whitespace(self.current_token, self.depth * 4 + 8)
 
     def check_do(self):
         print "check_do(): not implemented"
 
     def check_switch(self):
-        print "check_switch(): not implemented"
+        while self.current_token.type != Type.LPAREN:
+            print "check_switch(): unexpected token: ", self.current_token
+            self.match()
+        self.match()
+        self.check_expression()
+        self.check_line_continuation()
+        # match out the {
+        self.check_whitespace(self.current_token, 1)
+        self.match()
+        self.depth += 1
+        while self.current_token.type == Type.CASE:
+            self.check_whitespace(self.current_token, self.depth * 4)
+            self.match() #case
+            if self.current_token.type != Type.CONSTANT:
+                print "check_switch(): unexpected token: ", self.current_token
+                return
+            self.check_whitespace(self.current_token, 1)
+            self.match() #constant
+            if self.current_token.type != Type.COLON:
+                print "check_switch(): unexpected token: ", self.current_token
+                return
+            self.check_whitespace(self.current_token, 0)
+            self.match() #:
+            self.check_case()
 
     def check_case(self):
-        print "check_case(): not implemented"
+        while self.current_token.type != Type.CASE:
+            if self.current_token.type == Type.RBRACE:
+                if self.previous_token().type != Type.NEWLINE:
+                    self.errors.braces(self.current_token.type, Errors.CLOSING)
+                return
+            self.check_whitespace(self.current_token, self.depth * 4)
+            self.check_statement()
 
     def check_statement(self):
         print "check_statement(): not implemented"
 
+    def check_expression(self):
+        print "check_expression(): not implemented"
+
     def check_block(self):
         self.depth += 1
-        print "check_block(): not implemented"
         token = self.current_token
         #since this is a opening brace, ensure we have a following newline
         if token.type != Type.NEWLINE:
@@ -529,7 +621,7 @@ class Styler(object):
             token = self.current_token
         #block ends if we hit the matching brace
         while token.type != Type.RBRACE:
-            self.check_whitespace(token)
+            self.check_whitespace(token, self.depth * 4)
             self.match()
             if token.type == Type.RETURN:
                 self.check_expression()
@@ -548,55 +640,89 @@ class Styler(object):
             else:
                 print "check_block(): unexpected token:", token
         self.depth -= 1
-        self.check_whitespace(token)
+        self.check_whitespace(token, self.depth * 4)
         return
 
     def check_define(self):
-        print "check_define(): not implemented"
-
-    def check_paren(self):
-        while True:
-            token = self.current_token
+        #TODO incomplete?
+        while self.current_token.type != Type.NEWLINE:
             self.match()
-            if token.type == Type.RPAREN:
-                return
-            #possibly:
-            # function prototype
-            # function definition
-            if token.type == Type.TYPE:
-                #finish the type
-                pass
-            # function call
-            # typecast
-            # expression
-            else:
-                print "check_paren(): unexpected token:", token
+            
+        self.match()
 
     def check_declaration(self):
-        terminator = None
         expected_indent = 1
-        while True:
-            token = self.current_token
-            self.match()
-            if token.type == terminator:
+        while self.current_token.type != Type.SEMICOLON:
+            #skip all the potential types and modifiers
+            while self.current_token.type != Type.UNKNOWN:
+                self.check_whitespace(self.current_token, 1)
+                self.match()
+            self.match() #identifier
+            #is this a function?
+            if self.current_token.type == Type.LPAREN:
+                self.check_naming(self.previous_token(), Errors.FUNCTION)
+                self.match() #(
+                #TODO need to chomp some args here and test naming and spacing
+                #but for now
+                while self.current_token.type != Type.RPAREN:
+                    self.match() #args
+                self.match() #)
+                self.check_line_continuation()
+                #was it just a prototype
+                if self.current_token.type == Type.SEMICOLON:
+                    self.check_whitespace(self.current_token, 0)
+                    self.match() #;
+                #and now for the hard one
+                elif self.current_token.type == Type.LBRACE:
+                    if self.previous_token().type == Type.NEWLINE:
+                        self.check_whitespace(self.current_token, 0)
+                    else:
+                        self.check_whitespace(self.current_token, 1)
+                    self.match()
+                    if self.current_token.type != Type.NEWLINE:
+                        self.errors.braces(self.current_token, Errors.RUNON)
+                    else:
+                        self.match() #\n
+                    self.check_block()
+                return                    
+            #well, it's a non-func then
+            self.check_naming(self.previous_token(), Errors.VARIABLE)
+            #allow a single space, or zero if type is pointer
+            self.check_whitespace(self.current_token(), 1, 
+                    self.previous_token().type != Type.STAR)
+            self.check_line_continuation()
+            #is it just a declaration?
+            if self.current_token.type() == Type.SEMICOLON:
+                self.check_whitespace(self.current_token, 0)
+                self.match() #;
                 return
-            # check indentation
-            self.check_whitespace(token, expected_indent)
-            # continue checking
-            if token.type == Type.TYPE:
-                self.check_declaration()
-            if token.type == Type.STAR:
-                #found a pointer declaration
-                self.check_whitespace(token, 1, Styler.MAX)
-                name = self.tokens[i+1] #TODO check if newline
-            if token.type == Type.UNKNOWN:
-                #sounds like a variable name
-                pass #TODO
-            if token.type == Type.IGNORE:
-                pass
-            else:
-                print "check_declaration(): unexpected type:", token
-
+            #is it a multi-var declaration?
+            while self.current_token.type() == Type.COMMA:
+                self.check_whitespace(self.current_token, 0)
+                self.match() #,
+                self.check_line_continuation()
+                if self.previous_token().type != Type.NEWLINE:
+                    self.check_whitespace(self.current_token, 1)
+                #is it another identifier?
+                if self.current_token.type != Type.UNKNOWN:
+                    print "check_declaration(): mid-multi assign, unexpected"\
+                            + " token:", self.current_token
+                    return
+                self.match() #identifier
+                #or was the previous identifier being initialised
+                if self.current_token.type == Type.ASSIGNMENT:
+                    self.check_whitespace(self.current_token, 1)
+                    self.match() #=
+                    self.check_whitespace(self.current_token, 1)
+                    self.check_expression() #match out the expression
+                    continue                
+                #token will now be , or ;
+            if self.current_token.type != Type.SEMICOLON:
+                print "check_declaration(): unexpected token:", \
+                        self.current_token
+                return
+            self.match() #;
+            
 if __name__ == '__main__':
     if (len(sys.argv)) == 1:
         print "no arguments given"
