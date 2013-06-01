@@ -9,9 +9,9 @@ import sys
 
 DEBUG = False
 
-def d(l):
+def d(elements):
     if DEBUG:
-        print " ".join([str(x) for x in l])
+        print " ".join([str(x) for x in elements])
 
 DEFAULT_TYPES = ['void', 'char', 'short', 'int', 'long',
                  'float', 'double', 'signed', 'unsigned']
@@ -209,9 +209,8 @@ class Tokeniser(object):
         self.in_char = False
         self.multi_char_op = False
 
-    def add_to_word(self, char):
-        self.current_word.append(char, self.space_left, self.line_number,
-                self.current_word_start)
+    def add_to_word(self, char, n):
+        self.current_word.append(char, self.space_left, self.line_number, n)
         self.space_left = 0
 
     def tokenise(self, megastring):
@@ -221,7 +220,7 @@ class Tokeniser(object):
             #step 0: if we were waiting for the second char in a "==" or
             # similar, grab it and move on already
             if self.multi_char_op:
-                self.add_to_word(c)
+                self.add_to_word(c, n - self.line_start)
                 #catch dem silly >>= and <<= ops
                 if self.current_word.get_string() + c + "=" in ASSIGNMENTS:
                     continue
@@ -231,9 +230,10 @@ class Tokeniser(object):
             if self.in_singleline_comment:
                 if c == '\n':
                     self.in_singleline_comment = False
-                    self.add_to_word(COMMENT)
+                    self.add_to_word(COMMENT, n - self.line_start)
                     self.end_word()
                     self.line_number += 1
+                    self.line_start = n + 1
                 else:
                     continue
 
@@ -246,7 +246,7 @@ class Tokeniser(object):
                 #if we've reached the end of the comment
                 if self.multiline_comment == n:
                     self.multiline_comment = 0
-                    self.add_to_word(COMMENT)
+                    self.add_to_word(COMMENT, n - self.line_start)
                     self.end_word()
             #step 3: deal with newlines, ends the current word
             elif c == '\n':
@@ -256,12 +256,12 @@ class Tokeniser(object):
                 self.line_number += 1
                 self.line_start = n + 1
                 #...line AHYUK, AHYUK
-                self.add_to_word(c)
+                self.add_to_word(c, n - self.line_start)
                 self.end_word()
 
             #don't want to get caught interpreting chars in strings as real
             elif self.in_string:
-                self.add_to_word(c)
+                self.add_to_word(c, n - self.line_start)
                 #string ending
                 if c == '"':
                     #but not if it's escaped
@@ -274,7 +274,7 @@ class Tokeniser(object):
                         self.end_word()
             #that was fuuun, but it repeats with chars
             elif self.in_char:
-                self.add_to_word(c)
+                self.add_to_word(c, n - self.line_start)
                 #first: is it a '; second: are sneaky people involved
                 if c == "'" and megastring[n-1] != '\\':
                     self.end_word()
@@ -286,31 +286,32 @@ class Tokeniser(object):
             #catch the start of a string
             elif c == '"':
                 self.in_string = not self.in_string
-                self.add_to_word(c)
+                self.add_to_word(c, n - self.line_start)
             #or, for that matter, the start of a char
             elif c == "'":
                 self.in_char = not self.in_char
-                self.add_to_word(c)
+                self.add_to_word(c, n - self.line_start)
             #now we just have to catch the possible word seperators
             elif c in self.deal_breakers:
                 if c == "/" and megastring[n+1] == "*":
-                    self.multiline_comment = megastring.find("*/", n) + 1
+                    self.multiline_comment = megastring.find("*/",
+                            n - self.line_start) + 1
                 elif c == "/" and megastring[n+1] == "/":
                     self.in_singleline_comment = True
                 elif c + megastring[n+1] in ALL_OPS:
                     self.multi_char_op = True
                     self.end_word()
-                    self.add_to_word(c)
+                    self.add_to_word(c, n - self.line_start)
                 #ennnnd of ze word
                 else:
                     self.end_word()
                     #only single character constructs remain, so add them and
                     #include "bad_jokes.h"
                     #... END THEM
-                    self.add_to_word(c)
+                    self.add_to_word(c, n - self.line_start)
                     self.end_word()
             else:
-                self.add_to_word(c)
+                self.add_to_word(c, n - self.line_start)
 
     def get_tokens(self):
         return self.tokens
@@ -354,9 +355,8 @@ class Errors(object):
 
     def func_length(self, line_number, length):
         self.total += 1
-        self.func_length_d[line_number] = \
-                "[OVERALL] Function length of %d is over the maximum of 50" %\
-                        length
+        self.func_length_d[line_number] = "[OVERALL] Function length of" \
+                + " %d is over the maximum of 50" % length
 
     def braces(self, token, error_type):
         self.total += 1
@@ -396,9 +396,11 @@ class Errors(object):
                 self.line_length_d, self.naming_d, self.func_length_d,
                 self.comments_d]:
             for key in error_type.keys():
-                print "line",key, ":", error_type[key]
+                print "line", key, ":", error_type[key]
 
     def __repr__(self):
+        if not self.total:
+            return "no errors found"
         counts = [len(error_type.keys()) for error_type in [
                 self.braces_d, self.whitespace_d,
                 self.line_length_d, self.naming_d, self.func_length_d,
@@ -511,9 +513,11 @@ class Styler(object):
         if is_strict:
             if token.get_spacing_left() != expected:
                 self.errors.whitespace(token, expected)
+                print "whitespace error: expected", expected, "was", token
         else:
             if token.get_spacing_left() <= expected:
                 self.errors.whitespace(token, expected)
+                print "whitespace error: expected", expected, "was", token
 
     def check_naming(self, token, name_type = Errors.VARIABLE):
         name = token.get_string()
@@ -631,6 +635,11 @@ class Styler(object):
             self.match()
             self.check_whitespace(self.current_token, 1)
             self.check_expression()
+            while self.current_token.type == Type.COMMA:
+                self.check_whitespace(self.current_token.type, 0)
+                self.match()
+                self.check_whitespace(self.current_token.type, 1)
+                assert self.current_token.type == Type.UNKNOWN
         elif self.current_token.type == Type.LPAREN:
             self.match()
             #function call
@@ -638,13 +647,14 @@ class Styler(object):
             while self.current_token.type == Type.COMMA:
                 self.match()
                 if self.current_token.type == Type.NEWLINE:
-                    self.check_line_continuations()
+                    self.check_line_continuation()
                 else:
-                    self.check_whitespace(self.current_token, 0)
+                    self.check_whitespace(self.current_token, 1)
                 self.check_expression()
             assert self.current_token.type == Type.RPAREN
             self.match()
         assert self.current_token.type == Type.SEMICOLON
+        self.match()
         d(["D: check_statement(): exited", self.current_token])
 
 
@@ -698,8 +708,11 @@ class Styler(object):
                 self.check_declaration()
             elif token.type == Type.RETURN:
                 self.check_expression()
+                assert self.current_token.type == Type.SEMICOLON
+                self.check_whitespace(self.current_token, 0)
+                self.match()
             elif token.type == Type.CREMENT:
-                assert self.current_token.type == UNKNOWN
+                assert self.current_token.type == Type.UNKNOWN
                 self.check_whitespace(self.current_token, 0)
                 self.match()
             elif token.type == Type.FOR:
