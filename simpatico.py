@@ -3,13 +3,15 @@
 """ This is a complete rewrite of the old simpatico.
 Hopefully it's good. """
 
-
 import sys
+
+#MOSS_INCLUDE_LOCATIONS
 
 DEFAULT_TYPES = ['void', 'char', 'short', 'int', 'long',
                  'float', 'double', 'signed', 'unsigned']
 IGNORABLE_KEYWORDS = ['auto', 'register', 'static',
                       'const', 'volatile']
+KNOWN_VARIABLES = ['errno', 'stderr', 'stdout']
 BINARY_OPERATORS = ["+", "/", "%", ">>", "<<", "|", "^", "->", ".", "?", ":"]
 UNARY_OPERATORS = ["--", "++"]
 LOGICAL_OPERATORS = ["&&", "||", "<", ">", "<=", ">=", "=="]
@@ -147,8 +149,8 @@ class Word(object):
         return self.type
 
     def __repr__(self):
-        return "%d:%d  i:%d '%s'\n" % (self.line_number, self.start,
-                                     self.space, "".join(self.line))
+        return "%d:%d  i:%d '\033[1m%s\033[0m'\n" % (self.line_number,
+                self.start, self.space, "".join(self.line))
 
 class Tokeniser(object):
     DUPLICATE_OPS = ['|', '&', '<', '>', '+', '-', '=']
@@ -392,12 +394,13 @@ class Styler(object):
                 self.errors.line_length(line_number, len(line))
         self.infile.close()
         self.position = 0
+        self.comments = {}
         #then the guts of it all
         tokeniser = Tokeniser(filename)
         self.tokens = tokeniser.get_tokens()
         self.current_token = self.tokens[self.position]
         try:
-            self.process(filename)
+            self.process_globals(filename)
         except IndexError as e:
             #that'd be us finished
             pass
@@ -412,6 +415,18 @@ class Styler(object):
         self.position += 1
         #unsafe, deliberately so
         self.current_token = self.tokens[self.position]
+        while self.current_token.get_type() == Type.COMMENT:
+            self.comments[self.current_token.get_line_number()] = True
+            self.match()
+
+    def previous_token(self):
+        return self.tokens[self.position - 1]
+
+    def peek(self):
+        try:
+            return self.tokens[self.position + 1]
+        except IndexError as e:
+            return Word()
 
     def write_output_file(self, filename):
         """go over the file and insert messages when appropriate"""
@@ -423,43 +438,39 @@ class Styler(object):
         infile.close()
         outf.close()
 
-    def process(self, filename):
+    def process_globals(self, filename):
         """ There's an assumption here that the code compiles to start with.
+        Only checking the types of tokens that can start lines in this
+        context (compiler directives, prototypes, declarations, definitions).
         """
         i = self.position
+        expected_indent = 0 #at global level
         while True:
             token = self.current_token
+            self.check_whitespace(token, expected_indent);
+            self.match()
             tokentype = token.get_type()
-            #only checking things which can start statements in global space
+            #check for compiler directives that aren't #define
             if token.type == Type.INCLUDE:
                 #just strip these out, we don't care
                 while self.current_token.get_type() != Type.NEWLINE:
                     self.match()
+            #define
             elif token.type == Type.DEFINE:
-                self.match()
                 self.check_define()
+            #declaration
             elif token.type == Type.TYPE:
-                self.match()
                 self.check_declaration()
             elif token.type == Type.IGNORE:
-                self.match()
                 self.check_declaration()
-            elif token.type == Type.LBRACE:
-                self.match()
-                self.check_block()
+            #spare whitespace
             elif token.type == Type.NEWLINE:
-                self.match()
                 #skip leading blank lines
-                #TODO maybe violate it
+                #TODO maybe violate multiples
                 continue
-            elif token.type == Type.COMMENT:
-                self.match()
-                self.check_comment()
             elif token.type == Type.UNKNOWN:
-                self.match()
                 self.check_statement()
             else:
-                self.match()
                 print "found an awkward type in global space:", token
 
     def check_whitespace(self, token, expected, is_strict = True):
@@ -489,90 +500,106 @@ class Styler(object):
         else:
             print "check_naming(): unknown naming type given: token=", token
 
-    def check_for(self, depth = 0):
+    def check_for(self):
         print "check_for(): not implemented"
 
-    def check_while(self, depth = 0):
+    def check_while(self):
         print "check_while(): not implemented"
 
-    def check_do(self, depth = 0):
+    def check_do(self):
         print "check_do(): not implemented"
 
-    def check_return(self, depth = 0):
-        print "check_return(): not implemented"
-
-    def check_switch(self, depth = 0):
+    def check_switch(self):
         print "check_switch(): not implemented"
 
-    def check_case(self, depth = 0):
+    def check_case(self):
         print "check_case(): not implemented"
 
-    def check_statement(self, depth = 0):
+    def check_statement(self):
         print "check_statement(): not implemented"
 
-    def check_comment(self, depth = 0):
-        print "check_comment(): not implemented"
+    def check_block(self):
+        self.depth += 1
+        print "check_block(): not implemented"
+        token = self.current_token
+        #since this is a opening brace, ensure we have a following newline
+        if token.type != Type.NEWLINE:
+            self.errors.braces(token, Errors.RUNON)
+            self.match()
+            token = self.current_token
+        #block ends if we hit the matching brace
+        while token.type != Type.RBRACE:
+            self.check_whitespace(token)
+            self.match()
+            if token.type == Type.RETURN:
+                self.check_expression()
+            elif token.type == Type.CREMENT:
+                self.check_statement()
+            elif token.type == Type.FOR:
+                self.check_for()
+            elif token.type == Type.WHILE:
+                self.check_while()
+            elif token.type == Type.DO:
+                self.check_do()
+            elif token.type == Type.SWITCH:
+                self.check_switch()
+            elif token.type != Type.NEWLINE:
+                continue
+            else:
+                print "check_block(): unexpected token:", token
+        self.depth -= 1
+        self.check_whitespace(token)
+        return
 
-    def check_block(self, depth = 0):
-        print "check_for(): not implemented"
-
-    def check_define(self, depth = 0):
+    def check_define(self):
         print "check_define(): not implemented"
 
-    def check_paren(self, depth = 0):
-        print "check_paren(): not implemented"
-
-    def check_declaration(self, depth = 0):
-        terminator = None
-        expected_indent = depth * 4
+    def check_paren(self):
         while True:
             token = self.current_token
+            self.match()
+            if token.type == Type.RPAREN:
+                return
+            #possibly:
+            # function prototype
+            # function definition
+            if token.type == Type.TYPE:
+                #finish the type
+                pass
+            # function call
+            # typecast
+            # expression
+            else:
+                print "check_paren(): unexpected token:", token
+
+    def check_declaration(self):
+        terminator = None
+        expected_indent = 1
+        while True:
+            token = self.current_token
+            self.match()
             if token.type == terminator:
-                self.match()
                 return
             # check indentation
             self.check_whitespace(token, expected_indent)
             # continue checking
+            if token.type == Type.TYPE:
+                self.check_declaration()
             if token.type == Type.STAR:
                 #found a pointer declaration
                 self.check_whitespace(token, 1, Styler.MAX)
                 name = self.tokens[i+1] #TODO check if newline
             if token.type == Type.UNKNOWN:
                 #sounds like a variable name
-                self.match()
                 pass #TODO
             if token.type == Type.IGNORE:
-                self.match()
                 pass
-            if token.type == Type.RETURN:
-                self.match()
-                self.check_return()
-            elif token.type == Type.FOR:
-                self.match()
-                self.check_for()
-            elif token.type == Type.CREMENT:
-                self.match()
-                self.check_statement()
-            elif token.type == Type.LPAREN:
-                self.match()
-                self.check_paren()
-            elif token.type == Type.WHILE:
-                self.match()
-                self.check_while()
-            elif token.type == Type.DO:
-                self.match()
-                self.check_do()
-            elif token.type == Type.SWITCH:
-                self.match()
-                self.check_switch()
-            elif token.type == Type.STAR:
-                self.match()
-                self.check_statement()
             else:
-                print "check_declaration() found unknown type:", token
-                self.match()
+                print "check_declaration(): unexpected type:", token
 
 if __name__ == '__main__':
+    if (len(sys.argv)) == 1:
+        print "no arguments given"
     for i in range(1, len(sys.argv)):
         if sys.argv[i].strip():
             print 'Parsing %s...' % sys.argv[i],
