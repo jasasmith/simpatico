@@ -1,5 +1,13 @@
 /* Contains no brace violations of any type.*/
 
+struct bob {
+    int charles;
+};
+
+typedef struct {
+    int woo;
+} wooo;
+
 int array[] = {1, 2, 3, 4};
 int another[] = {
     1,
@@ -19,7 +27,8 @@ void if_continutation(void) {
     }
 }
 
-int fa(int a) {
+int fa(int a) 
+{
     if (a) {
         a++;
     } else if (a+1) {
