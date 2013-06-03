@@ -1,17 +1,17 @@
 /* Contains bad brace violations of different types, including mixes of
 ** good and bad. Currently contains
-** 17
+** 16
 ** violations.
 */
 
-/* 1 violation */
-void badfuncA(void)
+/* not a violation, functions may be either */
+void good_func_a(void)
 {
     return;
 }
 
 /* 1 violation */
-void badfuncB(void) { return; }
+void good_func_b(void) { return; }
 
 /* 3 violations */
 int fa(int a) {

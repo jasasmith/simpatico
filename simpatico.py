@@ -7,7 +7,7 @@ import sys
 
 #MOSS_INCLUDE_LOCATIONS
 
-DEBUG = False
+DEBUG = True
 
 INDENT_SIZE = 4
 LINE_CONTINUATION_SIZE = 8
@@ -148,7 +148,7 @@ class Word(object):
         elif line == "extern":
             self.type = Type.KW_EXTERN
         elif line == "break":
-            self.type = Type.BREAK
+            self.type = Type.RETURN
         elif line == "for":
             self.type = Type.FOR
         elif line == "do":
@@ -252,15 +252,15 @@ class Tokeniser(object):
 
             #step 2: continue on while inside a multiline comment
             elif self.multiline_comment:
-                #but update line numbers if it's a newline
-                if c == '\n':
-                    self.line_number += 1
-                    self.line_start = n + 1
                 #if we've reached the end of the comment
                 if self.multiline_comment == n:
                     self.multiline_comment = 0
                     self.add_to_word(COMMENT, n - self.line_start)
                     self.end_word()
+                #but update line numbers if it's a newline
+                if c == '\n':
+                    self.line_number += 1
+                    self.line_start = n + 1
             #step 3: deal with newlines, ends the current word
             elif c == '\n':
                 #out with the old
@@ -307,8 +307,7 @@ class Tokeniser(object):
             #now we just have to catch the possible word seperators
             elif c in self.deal_breakers:
                 if c == "/" and megastring[n+1] == "*":
-                    self.multiline_comment = megastring.find("*/",
-                            n - self.line_start) + 1
+                    self.multiline_comment = megastring.find("*/", n) + 1
                 elif c == "/" and megastring[n+1] == "/":
                     self.in_singleline_comment = True
                 elif c + megastring[n+1] in ALL_OPS:
@@ -409,7 +408,7 @@ class Errors(object):
         for error_type in [self.braces_d, self.whitespace_d,
                 self.line_length_d, self.naming_d, self.func_length_d,
                 self.comments_d]:
-            for key in error_type.keys():
+            for key in sorted(error_type.keys()):
                 print "line", key, ":", error_type[key]
 
     def __repr__(self):
@@ -448,14 +447,15 @@ class Styler(object):
         tokeniser = Tokeniser(filename)
         self.tokens = tokeniser.get_tokens()
         self.current_token = self.tokens[self.position]
-        while self.current_token.type in [Type.NEWLINE, Type.COMMENT]:
-            if self.current_token.type == Type.COMMENT:
-                self.check_whitespace()
-                self.comments[self.current_token.line_number] = True
-            self.position += 1
-            self.current_token = self.tokens[self.position]
-        self.suppress_brace_newlines = False
         try:
+            while self.current_token.type in [Type.NEWLINE, Type.COMMENT]:
+                d(["pre-process: skipping newline/comment", self.current_token])
+                if self.current_token.type == Type.COMMENT:
+                    self.check_whitespace()
+                    self.comments[self.current_token.line_number] = True
+                self.position += 1
+                self.current_token = self.tokens[self.position]
+            self.suppress_brace_newlines = False
             self.process_globals(filename)
         except IndexError:
             #that'd be us finished
@@ -513,7 +513,6 @@ class Styler(object):
             expected = self.depth * INDENT_SIZE + LINE_CONTINUATION_SIZE
         if token.whitespace_checked and DEBUG:
             print "whitespace check duplicated:", token
-            raise
             token.whitespace_checked += 1
             return
         token.whitespace_checked += 1
@@ -659,7 +658,16 @@ class Styler(object):
             self.check_whitespace((self.depth + 1) * INDENT_SIZE)
             self.check_statement()
 
-    def check_condition_block(self):
+    def should_have_block(self):
+        if self.current_token.type == Type.LBRACE:
+            self.check_whitespace(1)
+        #TODO: overly simplistic, will miss {\n }stuff
+            self.check_block(MAY_NEWLINE)
+        else:
+            self.errors.braces(self.current_token, Errors.MISSING)
+            self.check_statement()
+
+    def check_condition(self):
         # check spacing on the parenthesis
         self.check_whitespace(1) # if/while (
         self.match(Type.LPAREN)
@@ -667,12 +675,6 @@ class Styler(object):
         self.check_expression()
         self.check_whitespace(0) # exp)
         self.match(Type.RPAREN)
-        if self.current_token.type == Type.LBRACE:
-            self.check_whitespace(1)
-#TODO: overly simplistic, will miss while () {\n }stuff
-            self.check_block(MAY_NEWLINE)
-        else:
-            print "check_cond_block(): unexpected token: ", self.current_token
 
     def check_do(self):
         self.match(Type.LBRACE)
@@ -791,6 +793,7 @@ class Styler(object):
             return
         elif self.current_token.type not in [Type.UNKNOWN, Type.CONSTANT]:
             d(["D: check_exp(): unexpected token:", self.current_token])
+
         #grab a value of some form
         while self.current_token.type in [Type.UNKNOWN, Type.CONSTANT]:
             self.match() #the value
@@ -813,7 +816,7 @@ class Styler(object):
                 self.match(Type.RPAREN)
             # now grab the operators before the next value
             while self.current_token.type in [Type.CREMENT, Type.BINARY_OP,
-                    Type.LOGICAL_OP]:
+                    Type.LOGICAL_OP, Type.MINUS]:
                 self.check_whitespace(1, ALLOW_ZERO)
                 self.match() #'-- / - &&' etc
                 self.check_whitespace(1, ALLOW_ZERO)
@@ -822,8 +825,8 @@ class Styler(object):
 
     def check_block(self, closing_newline = MUST_NEWLINE):
         d(["\nD: check_block(): entered", self.current_token])
-        self.depth += 1
         self.match(Type.LBRACE)
+        self.depth += 1
         #block ends if we hit the matching brace
         while self.current_token.type != Type.RBRACE:
             d(["D:in block while: ", self.current_token])
@@ -851,7 +854,8 @@ class Styler(object):
                 self.check_for()
             elif self.current_token.type == Type.WHILE:
                 self.match(Type.WHILE)
-                self.check_condition_block()
+                self.check_condition()
+                self.should_have_block()
             elif self.current_token.type == Type.DO:
                 self.match(Type.DO)
                 self.check_do()
@@ -863,14 +867,16 @@ class Styler(object):
                 self.match(Type.SEMICOLON, MUST_NEWLINE)
             elif self.current_token.type == Type.IF:
                 self.match(Type.IF)
-                self.check_condition_block()
+                self.check_condition()
+                self.should_have_block()
                 while self.current_token.type == Type.ELSE:
                     self.check_whitespace(1)
                     self.match(Type.ELSE)
                     if self.current_token.type == Type.IF:
                         self.check_whitespace(1)
                         self.match(Type.IF)
-                        self.check_condition_block()
+                        self.check_condition()
+                        self.should_have_block()
                     elif self.current_token.type != Type.LBRACE:
                         self.errors.braces(self.current_token, Errors.MISSING)
                         self.check_whitespace((self.depth + 1) * INDENT_SIZE)
@@ -882,7 +888,8 @@ class Styler(object):
                 self.match(Type.UNKNOWN)
                 self.check_statement()
             else:
-                print "check_block(): unexpected token:", token
+                print "check_block(): unexpected token:", self.current_token
+                self.match()
         self.depth -= 1
         self.check_whitespace(self.depth * INDENT_SIZE)
         self.match(Type.RBRACE, closing_newline)
