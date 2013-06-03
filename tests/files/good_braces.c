@@ -50,7 +50,7 @@ int fb(int a) {
     return a;
 }
 
-int main () {
+int main() {
     int a;
     switch (a) {
         case 0:
@@ -61,7 +61,7 @@ int main () {
     for (int i = 0; i < 10; i++) {
         a = i;
     }
-    while (!a)  {
+    while (!a) {
         a++;
     }
     if (fa(a)) {

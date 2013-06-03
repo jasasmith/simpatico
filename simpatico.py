@@ -9,6 +9,12 @@ import sys
 
 DEBUG = False
 
+INDENT_SIZE = 4
+LINE_CONTINUATION_SIZE = 8
+ALLOW_ZERO = True
+(NO_NEWLINE, MAY_NEWLINE, MUST_NEWLINE) = range(3)
+IS_TYPEDEF = True
+
 def d(elements):
     if DEBUG:
         print " ".join([str(x) for x in elements])
@@ -29,6 +35,7 @@ COMMENT = '\t'
 class Type(object):
     """ Yes, this could be an Enum, but I'm being kind to older versions of
     Python """
+    ANY = -1
     (   ERROR_TYPE, DEFINE, INCLUDE, COMMENT, NEWLINE, COMMA, LBRACE, RBRACE,
         LPAREN, RPAREN, MINUS, BINARY_OP, LOGICAL_OP, STAR,
         AMPERSAND, TYPE, CREMENT, IGNORE, KW_EXTERN, BREAK, FOR, SWITCH, CASE,
@@ -64,8 +71,7 @@ class Word(object):
         self.line = []
         self.start = -1
         self.type = Type.ERROR_TYPE
-        if DEBUG:
-            self.whitespace_checked = False
+        self.whitespace_checked = 0
 
     def get_string(self):
         return "".join(self.line)
@@ -180,9 +186,9 @@ class Word(object):
                 self.start, self.space, "".join(self.line))
 
 class Tokeniser(object):
-    DUPLICATE_OPS = ['|', '&', '<', '>', '+', '-', '=']
     """ The thing that turns a gigantic file of hopefully not terrible code
     into tokens that we can then deal with """
+    DUPLICATE_OPS = ['|', '&', '<', '>', '+', '-', '=']
     def __init__(self, filename):
         self.tokens = []
         self.line_number = 1
@@ -352,8 +358,9 @@ class Errors(object):
 
     def whitespace(self, token, expected):
         self.total += 1
+        assert token.get_spacing_left() != expected
         self.whitespace_d[token.line_number] = "[WHITESPACE] At " + \
-                "position %d: expected %d whitespace, had %d" % (
+                "position %d: expected %d whitespace, found %d " % (
                 token.get_position(), expected, token.get_spacing_left())
 
     def line_length(self, line_number, length):
@@ -436,10 +443,17 @@ class Styler(object):
         self.position = 0
         self.depth = 0
         self.comments = {}
+        self.line_continuation = False
         #then the guts of it all
         tokeniser = Tokeniser(filename)
         self.tokens = tokeniser.get_tokens()
         self.current_token = self.tokens[self.position]
+        while self.current_token.type in [Type.NEWLINE, Type.COMMENT]:
+            if self.current_token.type == Type.COMMENT:
+                self.check_whitespace()
+                self.comments[self.current_token.line_number] = True
+            self.position += 1
+            self.current_token = self.tokens[self.position]
         self.suppress_brace_newlines = False
         try:
             self.process_globals(filename)
@@ -449,43 +463,74 @@ class Styler(object):
         #make sure no changes skip whitespace
         if DEBUG:
             for token in self.tokens:
-                if token.type != Type.NEWLINE and not token.whitespace_checked:
-                    print "whitespace check missed: ", token
+                if token.type not in [Type.NEWLINE, Type.LINE_CONT] \
+                        and token.whitespace_checked != 1:
+                    print "whitespace check %d:" % token.whitespace_checked, token
+
+                    
         if output_file:
             self.write_output_file(filename)
 
         if verbose:
             self.errors.print_lines()
 
-    def match(self, req_type = -1):
+    def match(self, req_type = Type.ANY, want_newline = NO_NEWLINE):
         old = self.current_token.type
-        if req_type != -1 and old != req_type:
-            print self.current_token, old, req_type
+        if req_type != Type.ANY and old != req_type:
+            print "match fail:", self.current_token, old, req_type
             assert old == req_type
         if old == Type.SEMICOLON:
             if self.previous_token().type == Type.NEWLINE:
-                self.check_whitespace(self.current_token, self.depth * 4 )
+                self.check_whitespace(self.depth * INDENT_SIZE)
             else:
-                self.check_whitespace(self.current_token, 0)
+                self.check_whitespace(0)
         self.position += 1
         #unsafe, deliberately so
         self.current_token = self.tokens[self.position]
         while self.current_token.type == Type.COMMENT:
             self.comments[self.current_token.line_number] = True
-            self.match()
+            self.position += 1
+            self.current_token = self.tokens[self.position]
         if not self.suppress_brace_newlines and old == Type.LBRACE:
             #since this is a brace, ensure we have a following newline
-            self.ensure_newline()
-            
+            want_newline = MUST_NEWLINE
+        if want_newline == NO_NEWLINE and self.current_token.type \
+                in [Type.NEWLINE, Type.LINE_CONT]:
+            if old != Type.SEMICOLON:
+                self.line_continuation = True
+        elif want_newline == MUST_NEWLINE and self.current_token.type \
+                not in [Type.NEWLINE, Type.LINE_CONT]:
+            self.errors.braces(self.previous_token(), Errors.RUNON)
+        while self.current_token.type in [Type.NEWLINE, Type.LINE_CONT]:
+            self.position += 1
+            self.current_token = self.tokens[self.position]
+
+    def check_whitespace(self, expected = -1, one_or_zero = not ALLOW_ZERO):
+        token = self.current_token
+        if expected == -1:
+            expected = self.depth * INDENT_SIZE
+        if self.line_continuation and token.type != Type.RBRACE:
+            expected = self.depth * INDENT_SIZE + LINE_CONTINUATION_SIZE
+        if token.whitespace_checked and DEBUG:
+            print "whitespace check duplicated:", token
+            raise
+            token.whitespace_checked += 1
+            return
+        token.whitespace_checked += 1
+        if one_or_zero and expected <= 1:
+            if token.get_spacing_left() > 1:
+                d(["whitespace \033[1m error \033[0m:", expected, token,
+                        self.depth])
+                self.errors.whitespace(token, expected)
+        elif token.get_spacing_left() != expected:
+            d(["whitespace \033[1merror\033[0m:", expected, token,
+                    self.depth])
+            self.errors.whitespace(token, expected)
+        if self.line_continuation:
+            self.line_continuation = False
 
     def previous_token(self):
         return self.tokens[self.position - 1]
-
-    def peek(self):
-        try:
-            return self.tokens[self.position + 1]
-        except IndexError:
-            return Word()
 
     def write_output_file(self, filename):
         """go over the file and insert messages when appropriate"""
@@ -497,59 +542,52 @@ class Styler(object):
         infile.close()
         outf.close()
 
+    def consume_line(self):
+        while self.current_token.type != Type.NEWLINE:
+            self.position += 1
+            self.current_token.type = self.tokens[self.position]
+
     def process_globals(self, filename):
         """ There's an assumption here that the code compiles to start with.
         Only checking the types of tokens that can start lines in this
         context (compiler directives, prototypes, declarations, definitions).
         """
-        i = self.position
-        expected_indent = 0 #at global level
         while True:
-            token = self.current_token
-            self.check_whitespace(token, expected_indent)
-            self.match()
+            if self.current_token.type != Type.SEMICOLON:
+                self.check_whitespace(0)
             #check for compiler directives that aren't #define
-            if token.type == Type.INCLUDE:
-                #just strip these out, we don't care
-                while self.current_token.type != Type.NEWLINE:
-                    self.match()
+            if self.current_token.type == Type.INCLUDE:
+                self.match()
+#TODO           #just strip these out, we don't care for now
+                self.consume_line()
             #define
-            elif token.type == Type.DEFINE:
+            elif self.current_token.type == Type.DEFINE:
+                self.match()
                 self.check_define()
             #declaration
-            elif token.type == Type.TYPE:
+            elif self.current_token.type in [Type.TYPE, Type.UNKNOWN]:
                 self.check_declaration()
-            elif token.type == Type.IGNORE:
+            #type qualifiers
+            elif self.current_token.type == Type.IGNORE:
+                self.match()
                 self.check_declaration()
-            #spare whitespace
-            elif token.type == Type.NEWLINE:
-                #skip leading blank lines
-                #TODO maybe violate multiples
+            #skippable
+            elif self.current_token.type in [Type.NEWLINE, Type.COMMENT]:
+                self.match(Type.ANY, MUST_NEWLINE)
                 continue
-            elif token.type == Type.STRUCT:
+            #struct definition/declaration
+            elif self.current_token.type == Type.STRUCT:
+                self.match()
                 self.check_struct()
-            elif token.type == Type.TYPEDEF:
+            #typedef
+            elif self.current_token.type == Type.TYPEDEF:
+                self.match()
                 self.check_typedef()
-            elif token.type == Type.UNKNOWN:
-                self.check_statement()
+            #ruh roh
             else:
-                print "found an awkward type in global space:", token
-
-    def check_whitespace(self, token, expected, is_strict = True):
-        if DEBUG:
-            if token.whitespace_checked:
-                print "whitespace check duplicated:", token
-            token.whitespace_checked = True
-        if token.type == Type.NEWLINE:
-            return
-        if is_strict:
-            if token.get_spacing_left() != expected:
-                self.errors.whitespace(token, expected)
-                print "whitespace error: expected", expected, "was", token
-        else:
-            if token.get_spacing_left() <= expected:
-                self.errors.whitespace(token, expected)
-                print "whitespace error: expected", expected, "was", token
+                # print "found an awkward type in global space:", \
+                #         self.current_token
+                self.match()
 
     def check_naming(self, token, name_type = Errors.VARIABLE):
         name = token.get_string()
@@ -574,78 +612,67 @@ class Styler(object):
         d(["D: check_struct() entered"])
         #skip the type name
         if self.current_token.type == Type.UNKNOWN:
-            self.check_whitespace(self.current_token, 1)
+            self.check_whitespace(1)
             self.match(Type.UNKNOWN) # indentifier
         #ensure it's the block, then start it
         assert self.current_token.type == Type.LBRACE
-        self.check_whitespace(self.current_token, 1)
-        self.check_block() #since the contents is just declarations
+        self.check_whitespace(1)
+        self.check_block(NO_NEWLINE)
         if not isTypedef:
-            self.match(Type.SEMICOLON)
-        d(["D: check_struct() exited"])
+            self.match(Type.SEMICOLON, MUST_NEWLINE)
+        d(["D: check_struct() exited", self.current_token])
 
     def check_typedef(self):
+        d(["D: check_typedef() entered", self.current_token])
         if self.current_token.type == Type.STRUCT:
-            self.check_whitespace(self.current_token, 1)
-            self.match() # struct
-            self.check_struct(True)
-            self.check_whitespace(self.current_token, 1)
+            self.check_whitespace(1)
+            self.match(Type.STRUCT)
+            self.check_struct(IS_TYPEDEF)
+            self.check_whitespace(1)
             self.match(Type.UNKNOWN) # type
         else:
             while self.current_token.type in [Type.TYPE, Type.UNKNOWN]:
-                self.check_whitespace(self.current_token, 1)
+                self.check_whitespace(1)
                 self.match() # type
-        self.match(Type.SEMICOLON)
+        self.match(Type.SEMICOLON, MUST_NEWLINE)
+        d(["D: check_typedef() exited", self.current_token])
 
     def check_for(self):
         self.match(Type.LPAREN) # (
-        self.check_whitespace(self.current_token, 0)
+        self.check_whitespace(0)
         d(["D:checking for init", self.current_token])
-        self.check_statement() #for (thing;
+        self.check_statement(NO_NEWLINE) #for (thing;
         d(["checking for conditional", self.current_token])
-        self.check_whitespace(self.current_token, 1)
+        self.check_whitespace(1)
         self.check_expression() #for (thing; thing
         self.match(Type.SEMICOLON)
-        self.check_whitespace(self.current_token, 1)
+        self.check_whitespace(1)
         d(["checking for post-loop", self.current_token])
         self.check_expression() #for (thing; thing; thing)
         while self.current_token.type == Type.COMMA:
             self.check_expression() #for (thing; thing; thing, ...)
         if self.current_token.type == Type.LBRACE:
-            self.check_whitespace(self.current_token, 1)
+            self.check_whitespace(1)
             self.check_block()
         else:
             self.errors.braces(self.current_token, Errors.MISSING)
-            self.check_whitespace(self.current_token, (self.depth + 1) * 4)
+            self.check_whitespace((self.depth + 1) * INDENT_SIZE)
             self.check_statement()
 
     def check_condition_block(self):
         # check spacing on the parenthesis
-        self.check_whitespace(self.current_token, 1)
+        self.check_whitespace(1) # if/while (
         self.match(Type.LPAREN)
-        self.check_whitespace(self.current_token, 0)
+        self.check_whitespace(0) # (exp
         self.check_expression()
-        self.check_line_continuation()
-        self.check_whitespace(self.current_token, 0)
+        self.check_whitespace(0) # exp)
         self.match(Type.RPAREN)
-        if self.current_token.type == Type.NEWLINE:
-            self.errors.braces(self.current_token, Errors.MISSING)
-            while self.current_token.type == Type.NEWLINE:
-                self.match(Type.NEWLINE)
-            self.check_whitespace(self.current_token, self.depth * 4 + 4)
-            self.check_expression()
-        elif self.current_token.type == Type.LBRACE:
-            self.check_whitespace(self.current_token, 1)
-            self.check_block()
+        if self.current_token.type == Type.LBRACE:
+            self.check_whitespace(1)
+#TODO: overly simplistic, will miss while () {\n }stuff
+            self.check_block(MAY_NEWLINE)
         else:
             print "check_cond_block(): unexpected token: ", self.current_token
-
-    def check_line_continuation(self):
-        if self.current_token.type == Type.NEWLINE:
-            while self.current_token.type == Type.NEWLINE:
-                self.match(Type.NEWLINE)
-            #check the indentation of the continuation
-            self.check_whitespace(self.current_token, self.depth * 4 + 8)
 
     def check_do(self):
         self.match(Type.LBRACE)
@@ -654,47 +681,36 @@ class Styler(object):
         self.match(Type.LPAREN)
         if self.current_token.type != Type.RPAREN:
             self.check_expression() # exp )
-        self.match(Type.SEMICOLON)
+        self.match(Type.SEMICOLON, MUST_NEWLINE)
 
     def check_switch(self):
         d(["D:check_switch(): entered", self.current_token])
         self.match(Type.LPAREN)
-        self.check_whitespace(self.current_token, 0)
+        self.check_whitespace(0)
         self.check_expression()
-        self.check_whitespace(self.current_token, 0)
+        self.check_whitespace(0)
         self.match(Type.RPAREN)
-        self.check_line_continuation()
-        self.check_whitespace(self.current_token, 1)
-        self.match(Type.LBRACE)
+        self.check_whitespace(1)
+        self.match(Type.LBRACE, MUST_NEWLINE)
         self.depth += 1
         while self.current_token.type == Type.CASE:
-            self.check_whitespace(self.current_token, self.depth * 4)
+            self.check_whitespace(self.depth * INDENT_SIZE)
             self.match(Type.CASE)
-            self.check_whitespace(self.current_token, 1)
+            self.check_whitespace(1)
             self.match(Type.CONSTANT)
-            self.check_whitespace(self.current_token, 0)
-            self.match(Type.COLON)
-            self.match(Type.NEWLINE)
+            self.check_whitespace(0)
+            self.match(Type.COLON, MUST_NEWLINE)
             self.check_case()
         if self.current_token.type == Type.DEFAULT:
-            self.check_whitespace(self.current_token, self.depth * 4)
+            self.check_whitespace(self.depth * INDENT_SIZE)
             self.match(Type.DEFAULT)
-            self.check_whitespace(self.current_token, 1)
-            self.match(Type.COLON)
-            self.check_whitespace(self.current_token, self.depth * 4 + 4)
-            self.match(Type.NEWLINE)
+            self.check_whitespace(0)
+            self.match(Type.COLON, MUST_NEWLINE)
             self.check_case()
         self.depth -= 1
-        self.check_whitespace(self.current_token, self.depth)
-        self.match(Type.RBRACE)
-        self.ensure_newline()
+        self.check_whitespace(self.depth * INDENT_SIZE)
+        self.match(Type.RBRACE, MUST_NEWLINE)
         d(["D:check_switch(): exited", self.current_token])
-
-    def ensure_newline(self):
-        if self.current_token.type != Type.NEWLINE:
-            self.errors.braces(self.current_token, Errors.RUNON)
-        else:
-            self.match(Type.NEWLINE)
 
     def check_case(self):
         d(["D:check_case(): entered", self.current_token])
@@ -703,26 +719,26 @@ class Styler(object):
                 if self.previous_token().type != Type.NEWLINE:
                     self.errors.braces(self.current_token.type, Errors.CLOSING)
                 break
-            self.check_whitespace(self.current_token, self.depth * 4)
+            self.check_whitespace((self.depth + 1) * INDENT_SIZE)
             self.check_statement()
         d(["D:check_case(): exited", self.current_token])
 
-    def check_statement(self):
-        d(["D:check_statement(): entered", self.current_token])
+    def check_statement(self, in_for = False):
+        d(["D: check_statement(): entered", self.current_token])
         if self.current_token.type == Type.TYPE:
             self.check_declaration()
         elif self.current_token.type == Type.UNKNOWN:
             self.match(Type.UNKNOWN)
         if self.current_token.type == Type.ASSIGNMENT:
-            self.check_whitespace(self.current_token, 1)
+            self.check_whitespace(1)
             self.match(Type.ASSIGNMENT)
-            self.check_whitespace(self.current_token, 1)
+            self.check_whitespace(1)
             self.check_expression()
             while self.current_token.type == Type.COMMA:
-                self.check_whitespace(self.current_token.type, 0)
+                self.check_whitespace(0)
                 self.match(Type.COMMA)
-                self.check_whitespace(self.current_token.type, 1)
-#this will break, surely
+                self.check_whitespace(1)
+#TODO: this will break, surely
                 assert self.current_token.type == Type.UNKNOWN
         elif self.current_token.type == Type.LPAREN:
             self.match(Type.LPAREN)
@@ -730,160 +746,151 @@ class Styler(object):
             self.check_expression()
             while self.current_token.type == Type.COMMA:
                 self.match(Type.COMMA)
-                if self.current_token.type == Type.NEWLINE:
-                    self.check_line_continuation()
-                else:
-                    self.check_whitespace(self.current_token, 1)
+                self.check_whitespace(1)
                 self.check_expression()
             self.match(Type.RPAREN)
         elif self.current_token.type == Type.RETURN:
-            self.check_whitespace(self.current_token, self.depth * 4)
             self.match(Type.RETURN)
-            self.check_whitespace(self.current_token, 1)
-            self.check_expression()
+            #return value?
+            if self.current_token.type != Type.SEMICOLON:
+                self.check_whitespace(1)
+                self.check_expression()
         elif self.current_token.type == Type.CREMENT:
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
             self.match(Type.CREMENT)
-        self.match(Type.SEMICOLON)
-        if self.current_token.type != Type.NEWLINE:
-            self.errors.whitespace(self.current_token, Errors.MISSING)
-        else:
-            self.match(Type.NEWLINE)
+        self.match(Type.SEMICOLON, not in_for)
         d(["D: check_statement(): exited", self.current_token])
 
 
     def check_expression(self):
-        d(["D: entering check_exp()", self.current_token])
+        d(["D: check_exp(): entered", self.current_token])
         #clear out any pre-value modifiers
         if self.current_token.type == Type.AMPERSAND:
             self.match(Type.AMPERSAND)
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
         elif self.current_token.type == Type.STAR:
             self.match(Type.MINUS)
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
         elif self.current_token.type == Type.MINUS:
             self.match(Type.MINUS)
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
         elif self.current_token.type == Type.CREMENT:
             self.match(Type.CREMENT)
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
         elif self.current_token.type == Type.LPAREN:
             self.match(Type.LPAREN)
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
             #match a whole new expression
             self.check_expression()
         elif self.current_token.type == Type.NOT:
             self.match(Type.NOT)
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
         elif self.current_token.type == Type.RPAREN:
             #end this
-            self.check_whitespace(self.current_token, 0)
             self.match(Type.RPAREN)
             return
-        elif self.current_token.type == Type.NEWLINE:
-            self.check_line_continuation()
         elif self.current_token.type not in [Type.UNKNOWN, Type.CONSTANT]:
-            d(["D: check_exp() unexpected token:", self.current_token])
+            d(["D: check_exp(): unexpected token:", self.current_token])
         #grab a value of some form
         while self.current_token.type in [Type.UNKNOWN, Type.CONSTANT]:
             self.match() #the value
             #check if it was a function, check if it's being called
             if self.current_token.type == Type.LPAREN:
-                self.check_whitespace(self.current_token, 0)
+                self.check_whitespace(0)
                 self.match(Type.LPAREN)
-                self.check_whitespace(self.current_token, 0)
+                self.check_whitespace(0)
                 #does it have args
                 if self.current_token.type != Type.RPAREN:
                     #process first arg
                     self.check_expression()
-                    #process others
+                    #process others, if they exist
                     while self.current_token.type == Type.COMMA:
-                        self.check_whitespace(self.current_token, 0)
+                        self.check_whitespace(0)
                         self.match(Type.COMMA)
-                        self.check_whitespace(self.current_token, 1)
+                        self.check_whitespace(1)
                         self.check_expression()
-                self.check_whitespace(self.current_token, 0)
+                self.check_whitespace(0)
                 self.match(Type.RPAREN)
             # now grab the operators before the next value
             while self.current_token.type in [Type.CREMENT, Type.BINARY_OP,
                     Type.LOGICAL_OP]:
-                self.check_whitespace(self.current_token, 1, False)
+                self.check_whitespace(1, ALLOW_ZERO)
                 self.match() #'-- / - &&' etc
-                if self.current_token.type == Type.NEWLINE:
-                    self.check_line_continuation()
-                else:
-                    self.check_whitespace(self.current_token, 1, False)
+                self.check_whitespace(1, ALLOW_ZERO)
                 self.check_expression()
-        d(["D: exiting check_exp()", self.current_token])
+        d(["D: check_exp(): exited", self.current_token])
 
-    def check_block(self):
-        d(["\nD:block entered"])
+    def check_block(self, closing_newline = MUST_NEWLINE):
+        d(["\nD: check_block(): entered", self.current_token])
         self.depth += 1
         self.match(Type.LBRACE)
-        #consume potential whitespace
-        while self.current_token.type == Type.NEWLINE:
-            self.match(Type.NEWLINE)
         #block ends if we hit the matching brace
         while self.current_token.type != Type.RBRACE:
-            token = self.current_token
-            d(["D:in block while: ", token])
-            self.check_whitespace(token, self.depth * 4)
-            self.match()
-            if token.type == Type.TYPE:
+            d(["D:in block while: ", self.current_token])
+            self.check_whitespace(self.depth * INDENT_SIZE)
+            if self.current_token.type == Type.TYPE:
+                self.match(Type.TYPE)
+                self.check_whitespace(1)
                 self.check_declaration()
-            elif token.type == Type.RETURN:
-                self.check_whitespace(self.current_token, 1)
-                self.check_expression()
-                self.match(Type.SEMICOLON)
-            elif token.type == Type.CREMENT:
-                self.check_whitespace(self.current_token, 0)
+                if self.current_token.type == Type.SEMICOLON:
+                    self.match(Type.SEMICOLON, MUST_NEWLINE)
+            elif self.current_token.type == Type.RETURN:
+                self.match(Type.RETURN)
+                if self.current_token.type != Type.SEMICOLON:
+                    self.check_whitespace(1)
+                    self.check_expression()
+                self.match(Type.SEMICOLON, MUST_NEWLINE)
+            elif self.current_token.type == Type.CREMENT:
+                self.match(Type.CREMENT)
+                self.check_whitespace(0)
                 self.match(Type.UNKNOWN) # identifier
-                self.match(Type.SEMICOLON)
-            elif token.type == Type.FOR:
-                self.check_whitespace(self.current_token, 1)
+                self.match(Type.SEMICOLON, MUST_NEWLINE)
+            elif self.current_token.type == Type.FOR:
+                self.match(Type.FOR)
+                self.check_whitespace(1)
                 self.check_for()
-            elif token.type == Type.WHILE:
+            elif self.current_token.type == Type.WHILE:
+                self.match(Type.WHILE)
                 self.check_condition_block()
-            elif token.type == Type.DO:
+            elif self.current_token.type == Type.DO:
+                self.match(Type.DO)
                 self.check_do()
-            elif token.type == Type.SWITCH:
-                self.check_whitespace(self.current_token, 1)
+            elif self.current_token.type == Type.SWITCH:
+                self.match(Type.SWITCH)
+                self.check_whitespace(1)
                 self.check_switch()
-            elif token.type in [Type.NEWLINE, Type.SEMICOLON]:
-                continue
-            elif token.type == Type.IF:
+            elif self.current_token.type == Type.SEMICOLON:
+                self.match(Type.SEMICOLON, MUST_NEWLINE)
+            elif self.current_token.type == Type.IF:
+                self.match(Type.IF)
                 self.check_condition_block()
                 while self.current_token.type == Type.ELSE:
-                    self.check_whitespace(self.current_token, 1)
+                    self.check_whitespace(1)
                     self.match(Type.ELSE)
-                    if self.current_token.type == Type.NEWLINE:
-                        self.errors.braces(self.current_token, Errors.RUNON)
-                        while self.current__token.type == Type.NEWLINE:
-                            self.match(Type.NEWLINE)
                     if self.current_token.type == Type.IF:
-                        self.check_whitespace(self.current_token, 1)
+                        self.check_whitespace(1)
                         self.match(Type.IF)
-                        self.check_whitespace(self.current_token, 1)
                         self.check_condition_block()
                     elif self.current_token.type != Type.LBRACE:
                         self.errors.braces(self.current_token, Errors.MISSING)
-                        self.check_whitespace(self.current_token,
-                            self.depth * 4 + 4)
+                        self.check_whitespace((self.depth + 1) * INDENT_SIZE)
                         self.check_statement()
                     else:
-                        self.check_whitespace(self.current_token, 1)
+                        self.check_whitespace(1)
                         self.check_block()
-            elif token.type == Type.UNKNOWN:
+            elif self.current_token.type == Type.UNKNOWN:
+                self.match(Type.UNKNOWN)
                 self.check_statement()
             else:
                 print "check_block(): unexpected token:", token
         self.depth -= 1
-        self.check_whitespace(self.current_token, self.depth * 4)
-        self.match(Type.RBRACE)
-        d(["D:block exited\n"])
+        self.check_whitespace(self.depth * INDENT_SIZE)
+        self.match(Type.RBRACE, closing_newline)
+        d(["D: check_block(): exited", self.current_token, "\n"])
 
     def check_define(self):
-#TODO incomplete?
+#TODO 
+        print "check_define(): not properly implemented"
         while self.current_token.type != Type.NEWLINE:
             self.match()
             
@@ -893,78 +900,63 @@ class Styler(object):
         self.suppress_brace_newlines = True
         if self.current_token.type == Type.UNKNOWN:
             #assignment is to another variable
-            self.check_whitespace(self.current_token, 1)
+            self.check_whitespace(1)
             self.match() # identifier
             return
-        self.check_whitespace(self.current_token, 1)
         self.match(Type.LBRACE)
-        if self.current_token.type == Type.NEWLINE:
-#TODO: a one element per line approach, so can't use check_line_cont
-            self.match(Type.NEWLINE)
-        self.check_whitespace(self.current_token, 0)
+        self.check_whitespace(0)
         self.check_expression()
         while self.current_token.type == Type.COMMA:
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
             self.match(Type.COMMA)
-            if self.current_token.type == Type.NEWLINE:
-                self.check_line_continuation()
-            elif self.current_token.type == Type.LINE_CONT: # /
+            if self.current_token.type == Type.LINE_CONT: # /
 #TODO: more checking here, probs
-                self.check_whitespace(self.current_token, 1)
+                self.check_whitespace(1)
                 self.match(Type.LINE_CONT)
-                self.check_line_continuation()
             else:
-                self.check_whitespace(self.current_token, 1)
+                self.check_whitespace(1)
             self.check_expression()
-        while self.current_token.type == Type.NEWLINE:
-            self.match(Type.NEWLINE)
-        self.check_whitespace(self.current_token, 1)
+        self.check_whitespace(0)
         self.match(Type.RBRACE)
-        self.match(Type.SEMICOLON)
+        assert self.current_token.type == Type.SEMICOLON
         self.suppress_brace_newlines = False
 
     def check_declaration(self):
         d(["D:check_declaration() entered", self.current_token])
         array = False
-        self.check_line_continuation()
         #skip all the potential types and modifiers
         while self.current_token.type != Type.UNKNOWN:
             d(["D:decl: consuming:", self.current_token])
-            self.check_whitespace(self.current_token, 1)
             self.match() #type/modifier
-        self.check_whitespace(self.current_token, 1)
+            self.check_whitespace(1)
         self.match(Type.UNKNOWN)
         #is this a function?
         if self.current_token.type == Type.LPAREN:
             d(["D:decl is a func", self.previous_token()])
             self.check_naming(self.previous_token(), Errors.FUNCTION)
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
             self.match(Type.LPAREN)
             if self.current_token.type != Type.RPAREN:
-                self.check_whitespace(self.current_token, 0)
+                self.check_whitespace(0)
                 print "consuming without checking:", self.current_token
                 self.match()
-#TODO need to chomp some args here and test naming and spacing
+#TODO need to chomp some args here and test naming
             #but for now
             while self.current_token.type != Type.RPAREN:
                 if self.current_token.type == Type.COMMA:
-                    self.check_whitespace(self.current_token, 0)
+                    self.check_whitespace(0)
                 else:
-                    self.check_whitespace(self.current_token, 1)
+                    self.check_whitespace(1)
                 self.match() #args
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
             self.match(Type.RPAREN)
-            self.check_line_continuation()
             #was it just a prototype
             if self.current_token.type == Type.SEMICOLON:
-                self.match(Type.SEMICOLON)
+                self.match(Type.SEMICOLON, MUST_NEWLINE)
             #and now for the hard one
             elif self.current_token.type == Type.LBRACE:
                 start_line = self.current_token.line_number
-                if self.previous_token().type == Type.NEWLINE:
-                    self.check_whitespace(self.current_token, 0)
-                else:
-                    self.check_whitespace(self.current_token, 1)
+                self.check_whitespace(1)
                 self.check_block()
                 func_length = self.current_token.line_number - start_line
                 if func_length >= 50:
@@ -974,58 +966,47 @@ class Styler(object):
         d(["D:decl is a var", self.previous_token()])
         #well, it's a non-func then
         self.check_naming(self.previous_token(), Errors.VARIABLE)
-        self.check_line_continuation()
         #is it an array?
         if self.current_token.type == Type.LSQUARE:
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
             self.match(Type.LSQUARE)
-            self.check_line_continuation()
             self.check_expression()
-            self.check_whitespace(self.current_token, 0)
+            self.check_whitespace(0)
             self.match(Type.RSQUARE)
             array = True
-        #finalise
+        #if this isn't initialised
         if self.current_token.type == Type.SEMICOLON:
-            self.check_whitespace(self.current_token, 0)
+            #leave the semicolon matching for the parent check_statement()
             d(["D:check_declaration() exited", self.current_token])
             return
             
         #token will now be , or =
         if self.current_token.type == Type.ASSIGNMENT:
-            self.check_whitespace(self.current_token, 1)
+            self.check_whitespace(1)
             self.match(Type.ASSIGNMENT)
-            self.check_whitespace(self.current_token, 1)
+            self.check_whitespace(1)
             if array:
                 self.check_array_assignment()
+                assert self.current_token.type == Type.SEMICOLON
             else:
                 self.check_expression()
         
         #is it a multi-var declaration?
         while self.current_token.type == Type.COMMA:
-            self.check_whitespace(self.current_token, 0)
-            self.match() #,
-#TODO: this newline checking needs fixing
-            self.check_line_continuation()
-            if self.previous_token().type != Type.NEWLINE:
-                self.check_whitespace(self.current_token, 1)
-            else:
-                self.match() # \n
+            self.check_whitespace(0)
+            self.match(Type.COMMA)
+            self.check_whitespace(1)
             #is it another identifier?
-            if self.current_token.type != Type.UNKNOWN:
-                print "check_declaration(): mid-multi assign, unexpected"\
-                        + " token:", self.current_token
-                return
+            assert self.current_token.type == Type.UNKNOWN
             self.match() #identifier
             #or was the previous identifier being initialised
             if self.current_token.type == Type.ASSIGNMENT:
-                self.check_whitespace(self.current_token, 1)
-                self.match() #=
-                self.check_whitespace(self.current_token, 1)
+                self.check_whitespace(1)
+                self.match(Type.ASSIGNMENT)
+                self.check_whitespace(1)
                 self.check_expression() #match out the expression
                 continue
-        if self.current_token.type != Type.SEMICOLON:
-            print "check_declaration(): unexpected token:", \
-                    self.current_token
+        assert self.current_token.type == Type.SEMICOLON
         d(["D:check_declaration() exited", self.current_token])
             
 if __name__ == '__main__':
