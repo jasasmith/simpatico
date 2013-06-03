@@ -7,7 +7,7 @@ import sys
 
 #MOSS_INCLUDE_LOCATIONS
 
-DEBUG = True
+DEBUG = False
 
 def d(elements):
     if DEBUG:
@@ -463,7 +463,10 @@ class Styler(object):
             print self.current_token, old, req_type
             assert old == req_type
         if old == Type.SEMICOLON:
-            self.check_whitespace(self.current_token, 0)
+            if self.previous_token().type == Type.NEWLINE:
+                self.check_whitespace(self.current_token, self.depth * 4 )
+            else:
+                self.check_whitespace(self.current_token, 0)
         self.position += 1
         #unsafe, deliberately so
         self.current_token = self.tokens[self.position]
@@ -547,7 +550,6 @@ class Styler(object):
             if token.get_spacing_left() <= expected:
                 self.errors.whitespace(token, expected)
                 print "whitespace error: expected", expected, "was", token
-        print "whitespace pass:", token
 
     def check_naming(self, token, name_type = Errors.VARIABLE):
         name = token.get_string()
@@ -568,7 +570,7 @@ class Styler(object):
         else:
             print "check_naming(): unknown naming type given: token=", token
 
-    def check_struct(self):
+    def check_struct(self, isTypedef = False):
         d(["D: check_struct() entered"])
         #skip the type name
         if self.current_token.type == Type.UNKNOWN:
@@ -578,8 +580,7 @@ class Styler(object):
         assert self.current_token.type == Type.LBRACE
         self.check_whitespace(self.current_token, 1)
         self.check_block() #since the contents is just declarations
-        if self.current_token.type == Type.SEMICOLON:
-            self.check_whitespace(self.current_token, 0)
+        if not isTypedef:
             self.match(Type.SEMICOLON)
         d(["D: check_struct() exited"])
 
@@ -587,27 +588,26 @@ class Styler(object):
         if self.current_token.type == Type.STRUCT:
             self.check_whitespace(self.current_token, 1)
             self.match() # struct
-            self.check_struct()
+            self.check_struct(True)
             self.check_whitespace(self.current_token, 1)
             self.match(Type.UNKNOWN) # type
         else:
             while self.current_token.type in [Type.TYPE, Type.UNKNOWN]:
                 self.check_whitespace(self.current_token, 1)
                 self.match() # type
-        self.check_whitespace(self.current_token, 0)
-        self.match(Type.SEMICOLON) # ;
+        self.match(Type.SEMICOLON)
 
     def check_for(self):
         self.match(Type.LPAREN) # (
         self.check_whitespace(self.current_token, 0)
-        print "checking for init", self.current_token
+        d(["D:checking for init", self.current_token])
         self.check_statement() #for (thing;
-        print "checking for conditional", self.current_token
+        d(["checking for conditional", self.current_token])
         self.check_whitespace(self.current_token, 1)
         self.check_expression() #for (thing; thing
         self.match(Type.SEMICOLON)
         self.check_whitespace(self.current_token, 1)
-        print "checking for post-loop", self.current_token
+        d(["checking for post-loop", self.current_token])
         self.check_expression() #for (thing; thing; thing)
         while self.current_token.type == Type.COMMA:
             self.check_expression() #for (thing; thing; thing, ...)
@@ -743,7 +743,7 @@ class Styler(object):
             self.check_expression()
         elif self.current_token.type == Type.CREMENT:
             self.check_whitespace(self.current_token, 0)
-            self.match()
+            self.match(Type.CREMENT)
         self.match(Type.SEMICOLON)
         if self.current_token.type != Type.NEWLINE:
             self.errors.whitespace(self.current_token, Errors.MISSING)
@@ -756,7 +756,7 @@ class Styler(object):
         d(["D: entering check_exp()", self.current_token])
         #clear out any pre-value modifiers
         if self.current_token.type == Type.AMPERSAND:
-            self.match()
+            self.match(Type.AMPERSAND)
             self.check_whitespace(self.current_token, 0)
         elif self.current_token.type == Type.STAR:
             self.match(Type.MINUS)
@@ -832,15 +832,12 @@ class Styler(object):
             if token.type == Type.TYPE:
                 self.check_declaration()
             elif token.type == Type.RETURN:
-                print "returning..."
                 self.check_whitespace(self.current_token, 1)
                 self.check_expression()
-                self.check_whitespace(self.current_token, 0)
                 self.match(Type.SEMICOLON)
             elif token.type == Type.CREMENT:
                 self.check_whitespace(self.current_token, 0)
                 self.match(Type.UNKNOWN) # identifier
-                self.check_whitespace(self.current_token, 0)
                 self.match(Type.SEMICOLON)
             elif token.type == Type.FOR:
                 self.check_whitespace(self.current_token, 1)
@@ -923,7 +920,6 @@ class Styler(object):
             self.match(Type.NEWLINE)
         self.check_whitespace(self.current_token, 1)
         self.match(Type.RBRACE)
-        self.check_whitespace(self.current_token, 0)
         self.match(Type.SEMICOLON)
         self.suppress_brace_newlines = False
 
@@ -961,7 +957,6 @@ class Styler(object):
             self.check_line_continuation()
             #was it just a prototype
             if self.current_token.type == Type.SEMICOLON:
-                self.check_whitespace(self.current_token, 0)
                 self.match(Type.SEMICOLON)
             #and now for the hard one
             elif self.current_token.type == Type.LBRACE:
