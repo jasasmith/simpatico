@@ -19,14 +19,14 @@ int main() {
             sum == 6 || sum == 7 || sum == 8 || sum == 9 || sum == 11 ||
         //error
         sum == 12 || sum > 12) {
-        printf("something went wrong!\n");
-        printf("oh noes!\n");
+        printf("something went %s wrong!\n","terribly"); //error: ", "
+        printf("oh %s!\n", "noes");
     } else {
-    printf("the sum is %d!\n", sum);
+    printf("the sum is %d!\n", sum); //error
     }
 
     int x = 2, y;
-    switch(x) {
+    switch(x) { //error (should be switch (x) {
         case 0:
             //errors
                 y = 0;
