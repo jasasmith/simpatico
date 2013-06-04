@@ -5,13 +5,13 @@
 */
 
 /* not a violation, functions may be either */
-void good_func_a(void)
+void good_func(void)
 {
     return;
 }
 
 /* 1 violation */
-void good_func_b(void) { return; }
+void bad_func(void) { return; }
 
 /* 3 violations */
 int fa(int a) {
@@ -62,7 +62,7 @@ void bad_loops(void) {
     { //violation
         a = i;
     }
-    for (;;) { break; } //violation
+    for ( ; ; ) { break; } //violation
     while (!a)  
     { //violation
         a++;

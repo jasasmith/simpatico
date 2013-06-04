@@ -64,6 +64,9 @@ int main() {
     while (!a) {
         a++;
     }
+    do {
+        --a;
+    } while (a);
     if (fa(a)) {
         a = 1;
     } else if (fb(b)) {

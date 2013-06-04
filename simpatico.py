@@ -455,7 +455,6 @@ class Styler(object):
                     self.comments[self.current_token.line_number] = True
                 self.position += 1
                 self.current_token = self.tokens[self.position]
-            self.suppress_brace_newlines = False
             self.process_globals(filename)
         except IndexError:
             #that'd be us finished
@@ -474,33 +473,51 @@ class Styler(object):
         if verbose:
             self.errors.print_lines()
 
-    def match(self, req_type = Type.ANY, want_newline = NO_NEWLINE):
+    def match(self, req_type = Type.ANY, post_newline = NO_NEWLINE,
+            pre_newline = NO_NEWLINE):
+        #store interesting parts
         old = self.current_token.type
+        old_line = self.current_token.line_number
+        # ensure we're matching what's expected
         if req_type != Type.ANY and old != req_type:
             print "match fail:", self.current_token, old, req_type
             assert old == req_type
+       # do a whitespace check for semicolons
         if old == Type.SEMICOLON:
             if self.previous_token().type == Type.NEWLINE:
                 self.check_whitespace(self.depth * INDENT_SIZE)
             else:
                 self.check_whitespace(0)
+        # check pre-token newlines if {
+        elif old == Type.LBRACE:
+            # previous was a newline but shouldn't have been
+            if self.previous_token().type == Type.NEWLINE:
+                if pre_newline == NO_NEWLINE:
+                    self.errors.braces(self.current_token, Errors.IF)
+            else: #previous wasn't a newline but should've been
+                if pre_newline == MUST_NEWLINE:
+                    self.errors.braces(self.current_token, Errors.MISSING)
+        #update
         self.position += 1
-        #unsafe, deliberately so
-        self.current_token = self.tokens[self.position]
+        self.current_token = self.tokens[self.position] #deliberately unsafe
+        
+        # clear comments
         while self.current_token.type == Type.COMMENT:
             self.comments[self.current_token.line_number] = True
             self.position += 1
             self.current_token = self.tokens[self.position]
-        if not self.suppress_brace_newlines and old == Type.LBRACE:
-            #since this is a brace, ensure we have a following newline
-            want_newline = MUST_NEWLINE
-        if want_newline == NO_NEWLINE and self.current_token.type \
-                in [Type.NEWLINE, Type.LINE_CONT]:
+        
+        # check for extra post-token newlines
+        if post_newline == NO_NEWLINE and self.current_token.type \
+                in [Type.NEWLINE, Type.LINE_CONT, Type.COMMENT]:
             if old != Type.SEMICOLON:
                 self.line_continuation = True
-        elif want_newline == MUST_NEWLINE and self.current_token.type \
-                not in [Type.NEWLINE, Type.LINE_CONT]:
+        # check for missing post-token newlines
+        elif post_newline == MUST_NEWLINE and old == Type.RBRACE \
+                and self.current_token.type not in [Type.NEWLINE,
+                Type.LINE_CONT, Type.COMMENT]:
             self.errors.braces(self.previous_token(), Errors.RUNON)
+        # consume all the newlines that may or may not have been there
         while self.current_token.type in [Type.NEWLINE, Type.LINE_CONT]:
             self.position += 1
             self.current_token = self.tokens[self.position]
@@ -530,6 +547,23 @@ class Styler(object):
 
     def previous_token(self):
         return self.tokens[self.position - 1]
+
+    def peek(self):
+        i = self.position + 1
+        while self.tokens[i].type in [Type.COMMENT, Type.NEWLINE,
+                Type.LINE_CONT]:
+            i += 1
+        return self.tokens[i]
+    
+    def has_matching_else(self):
+        i = self.position + 1
+        try:
+            while self.tokens[i].type not in [Type.IF, Type.RPAREN,
+                    Type.RBRACE, Type.ELSE]:
+                i += 1
+            return self.tokens[i].type == Type.ELSE
+        except IndexError:
+            return False
 
     def write_output_file(self, filename):
         """go over the file and insert messages when appropriate"""
@@ -616,7 +650,9 @@ class Styler(object):
         #ensure it's the block, then start it
         assert self.current_token.type == Type.LBRACE
         self.check_whitespace(1)
-        self.check_block(NO_NEWLINE)
+        self.match(Type.LBRACE, MAY_NEWLINE)
+        self.check_block()
+        self.match(Type.RBRACE, MAY_NEWLINE)
         if not isTypedef:
             self.match(Type.SEMICOLON, MUST_NEWLINE)
         d(["D: check_struct() exited", self.current_token])
@@ -652,18 +688,22 @@ class Styler(object):
             self.check_expression() #for (thing; thing; thing, ...)
         if self.current_token.type == Type.LBRACE:
             self.check_whitespace(1)
+            self.match(Type.LBRACE, MUST_NEWLINE)
             self.check_block()
+            self.match(Type.RBRACE, MUST_NEWLINE, MUST_NEWLINE)
         else:
             self.errors.braces(self.current_token, Errors.MISSING)
             self.check_whitespace((self.depth + 1) * INDENT_SIZE)
             self.check_statement()
 
-    def should_have_block(self):
+    def should_have_block(self, is_chained = False):
         if self.current_token.type == Type.LBRACE:
             self.check_whitespace(1)
-        #TODO: overly simplistic, will miss {\n }stuff
-            self.check_block(MAY_NEWLINE)
+            self.match(Type.LBRACE, MUST_NEWLINE)
+            self.check_block()
+            self.match(Type.RBRACE, is_chained, MUST_NEWLINE)
         else:
+            self.check_whitespace((self.depth + 1) * INDENT_SIZE)
             self.errors.braces(self.current_token, Errors.MISSING)
             self.check_statement()
 
@@ -677,12 +717,14 @@ class Styler(object):
         self.match(Type.RPAREN)
 
     def check_do(self):
-        self.match(Type.LBRACE)
+        self.match(Type.LBRACE, MUST_NEWLINE)
         self.check_block()
+        self.match(Type.RBRACE, NO_NEWLINE, MUST_NEWLINE)
         self.match(Type.WHILE)
         self.match(Type.LPAREN)
         if self.current_token.type != Type.RPAREN:
             self.check_expression() # exp )
+        self.match(Type.RPAREN)
         self.match(Type.SEMICOLON, MUST_NEWLINE)
 
     def check_switch(self):
@@ -823,9 +865,8 @@ class Styler(object):
                 self.check_expression()
         d(["D: check_exp(): exited", self.current_token])
 
-    def check_block(self, closing_newline = MUST_NEWLINE):
+    def check_block(self):
         d(["\nD: check_block(): entered", self.current_token])
-        self.match(Type.LBRACE)
         self.depth += 1
         #block ends if we hit the matching brace
         while self.current_token.type != Type.RBRACE:
@@ -868,7 +909,7 @@ class Styler(object):
             elif self.current_token.type == Type.IF:
                 self.match(Type.IF)
                 self.check_condition()
-                self.should_have_block()
+                self.should_have_block(self.has_matching_else())
                 while self.current_token.type == Type.ELSE:
                     self.check_whitespace(1)
                     self.match(Type.ELSE)
@@ -876,14 +917,9 @@ class Styler(object):
                         self.check_whitespace(1)
                         self.match(Type.IF)
                         self.check_condition()
-                        self.should_have_block()
-                    elif self.current_token.type != Type.LBRACE:
-                        self.errors.braces(self.current_token, Errors.MISSING)
-                        self.check_whitespace((self.depth + 1) * INDENT_SIZE)
-                        self.check_statement()
+                        self.should_have_block(self.has_matching_else())
                     else:
-                        self.check_whitespace(1)
-                        self.check_block()
+                        self.should_have_block()
             elif self.current_token.type == Type.UNKNOWN:
                 self.match(Type.UNKNOWN)
                 self.check_statement()
@@ -892,7 +928,6 @@ class Styler(object):
                 self.match()
         self.depth -= 1
         self.check_whitespace(self.depth * INDENT_SIZE)
-        self.match(Type.RBRACE, closing_newline)
         d(["D: check_block(): exited", self.current_token, "\n"])
 
     def check_define(self):
@@ -904,13 +939,12 @@ class Styler(object):
         self.match()
 
     def check_array_assignment(self):
-        self.suppress_brace_newlines = True
         if self.current_token.type == Type.UNKNOWN:
             #assignment is to another variable
             self.check_whitespace(1)
             self.match() # identifier
             return
-        self.match(Type.LBRACE)
+        self.match(Type.LBRACE, MAY_NEWLINE)
         self.check_whitespace(0)
         self.check_expression()
         while self.current_token.type == Type.COMMA:
@@ -924,9 +958,8 @@ class Styler(object):
                 self.check_whitespace(1)
             self.check_expression()
         self.check_whitespace(0)
-        self.match(Type.RBRACE)
+        self.match(Type.RBRACE, MAY_NEWLINE, MAY_NEWLINE)
         assert self.current_token.type == Type.SEMICOLON
-        self.suppress_brace_newlines = False
 
     def check_declaration(self):
         d(["D:check_declaration() entered", self.current_token])
@@ -964,7 +997,9 @@ class Styler(object):
             elif self.current_token.type == Type.LBRACE:
                 start_line = self.current_token.line_number
                 self.check_whitespace(1)
+                self.match(Type.LBRACE, MUST_NEWLINE, MAY_NEWLINE)
                 self.check_block()
+                self.match(Type.RBRACE, MUST_NEWLINE, MUST_NEWLINE)
                 func_length = self.current_token.line_number - start_line
                 if func_length >= 50:
                     self.errors.func_length(start_line, func_length)
