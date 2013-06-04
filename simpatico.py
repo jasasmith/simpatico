@@ -508,15 +508,10 @@ class Styler(object):
             self.comments[self.current_token.line_number] = True
             self.position += 1
             self.current_token = self.tokens[self.position]
-        
-        if old.type == Type.RBRACE:
-            print self.tokens[self.position - 3:self.position + 2]
-            print "hmm", old, self.current_token, post_newline == NO_NEWLINE
-        
+       
         # check for extra post-token newlines
         if post_newline == NO_NEWLINE and self.current_token.type \
                 in [Type.NEWLINE, Type.LINE_CONT, Type.COMMENT]:
-            print old, "missing post-newline"
             if old.type == Type.RBRACE:
                 self.errors.braces(old, Errors.RUNON)
             elif old.type != Type.SEMICOLON:
@@ -632,8 +627,8 @@ class Styler(object):
                 self.check_typedef()
             #ruh roh
             else:
-                # print "found an awkward type in global space:", \
-                #         self.current_token
+                 print "found an awkward type in global space:", \
+                         self.current_token
                 self.match()
 
     def check_naming(self, token, name_type = Errors.VARIABLE):
@@ -716,7 +711,6 @@ class Styler(object):
             self.match(Type.LBRACE, MUST_NEWLINE)
             self.check_block()
             if is_chained:
-                print "is chained", is_chained, self.previous_token(), self.current_token, self.tokens[self.position+1]
                 self.match(Type.RBRACE, NO_NEWLINE, MUST_NEWLINE)
             else:
                 self.match(Type.RBRACE, MUST_NEWLINE, MUST_NEWLINE)
