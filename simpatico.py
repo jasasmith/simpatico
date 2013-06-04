@@ -245,6 +245,9 @@ class Tokeniser(object):
                     self.in_singleline_comment = False
                     self.add_to_word(COMMENT, n - self.line_start)
                     self.end_word()
+                    #then add the newline
+                    self.add_to_word(c, n - self.line_start)
+                    self.end_word()
                     self.line_number += 1
                     self.line_start = n + 1
                 else:
@@ -476,27 +479,26 @@ class Styler(object):
     def match(self, req_type = Type.ANY, post_newline = NO_NEWLINE,
             pre_newline = NO_NEWLINE):
         #store interesting parts
-        old = self.current_token.type
-        old_line = self.current_token.line_number
+        old = self.current_token
         # ensure we're matching what's expected
-        if req_type != Type.ANY and old != req_type:
-            print "match fail:", self.current_token, old, req_type
-            assert old == req_type
+        if req_type != Type.ANY and old.type != req_type:
+            print "match fail:", self.current_token, old.type, req_type
+            assert old.type == req_type
        # do a whitespace check for semicolons
-        if old == Type.SEMICOLON:
-            if self.previous_token().type == Type.NEWLINE:
+        if old.type == Type.SEMICOLON:
+            if self.previous_token().type == [Type.COMMENT, Type.NEWLINE]:
                 self.check_whitespace(self.depth * INDENT_SIZE)
             else:
                 self.check_whitespace(0)
-        # check pre-token newlines if {
-        elif old == Type.LBRACE:
+        # check pre-token newlines if {}
+        elif old.type in [Type.LBRACE, Type.RBRACE]:
             # previous was a newline but shouldn't have been
-            if self.previous_token().type == Type.NEWLINE:
+            if self.previous_token().type in [Type.NEWLINE, Type.COMMENT]:
                 if pre_newline == NO_NEWLINE:
                     self.errors.braces(self.current_token, Errors.IF)
             else: #previous wasn't a newline but should've been
                 if pre_newline == MUST_NEWLINE:
-                    self.errors.braces(self.current_token, Errors.MISSING)
+                    self.errors.braces(self.current_token, Errors.RUNON)
         #update
         self.position += 1
         self.current_token = self.tokens[self.position] #deliberately unsafe
@@ -507,13 +509,20 @@ class Styler(object):
             self.position += 1
             self.current_token = self.tokens[self.position]
         
+        if old.type == Type.RBRACE:
+            print self.tokens[self.position - 3:self.position + 2]
+            print "hmm", old, self.current_token, post_newline == NO_NEWLINE
+        
         # check for extra post-token newlines
         if post_newline == NO_NEWLINE and self.current_token.type \
                 in [Type.NEWLINE, Type.LINE_CONT, Type.COMMENT]:
-            if old != Type.SEMICOLON:
+            print old, "missing post-newline"
+            if old.type == Type.RBRACE:
+                self.errors.braces(old, Errors.RUNON)
+            elif old.type != Type.SEMICOLON:
                 self.line_continuation = True
         # check for missing post-token newlines
-        elif post_newline == MUST_NEWLINE and old == Type.RBRACE \
+        elif post_newline == MUST_NEWLINE \
                 and self.current_token.type not in [Type.NEWLINE,
                 Type.LINE_CONT, Type.COMMENT]:
             self.errors.braces(self.previous_token(), Errors.RUNON)
@@ -557,10 +566,15 @@ class Styler(object):
     
     def has_matching_else(self):
         i = self.position + 1
+        depth = 1
         try:
             while self.tokens[i].type not in [Type.IF, Type.RPAREN,
                     Type.RBRACE, Type.ELSE]:
                 i += 1
+                if self.tokens[i].type == Type.RBRACE:
+                    depth -= 1
+                    if depth >= 0:
+                        i += 1
             return self.tokens[i].type == Type.ELSE
         except IndexError:
             return False
@@ -650,9 +664,9 @@ class Styler(object):
         #ensure it's the block, then start it
         assert self.current_token.type == Type.LBRACE
         self.check_whitespace(1)
-        self.match(Type.LBRACE, MAY_NEWLINE)
+        self.match(Type.LBRACE, MAY_NEWLINE, MAY_NEWLINE)
         self.check_block()
-        self.match(Type.RBRACE, MAY_NEWLINE)
+        self.match(Type.RBRACE, MAY_NEWLINE, MAY_NEWLINE)
         if not isTypedef:
             self.match(Type.SEMICOLON, MUST_NEWLINE)
         d(["D: check_struct() exited", self.current_token])
@@ -701,7 +715,11 @@ class Styler(object):
             self.check_whitespace(1)
             self.match(Type.LBRACE, MUST_NEWLINE)
             self.check_block()
-            self.match(Type.RBRACE, is_chained, MUST_NEWLINE)
+            if is_chained:
+                print "is chained", is_chained, self.previous_token(), self.current_token, self.tokens[self.position+1]
+                self.match(Type.RBRACE, NO_NEWLINE, MUST_NEWLINE)
+            else:
+                self.match(Type.RBRACE, MUST_NEWLINE, MUST_NEWLINE)
         else:
             self.check_whitespace((self.depth + 1) * INDENT_SIZE)
             self.errors.braces(self.current_token, Errors.MISSING)
@@ -753,7 +771,7 @@ class Styler(object):
             self.check_case()
         self.depth -= 1
         self.check_whitespace(self.depth * INDENT_SIZE)
-        self.match(Type.RBRACE, MUST_NEWLINE)
+        self.match(Type.RBRACE, MUST_NEWLINE, MUST_NEWLINE)
         d(["D:check_switch(): exited", self.current_token])
 
     def check_case(self):
@@ -919,7 +937,7 @@ class Styler(object):
                         self.check_condition()
                         self.should_have_block(self.has_matching_else())
                     else:
-                        self.should_have_block()
+                        self.should_have_block(self.has_matching_else())
             elif self.current_token.type == Type.UNKNOWN:
                 self.match(Type.UNKNOWN)
                 self.check_statement()
