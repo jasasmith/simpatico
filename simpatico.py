@@ -946,9 +946,11 @@ class Styler(object):
 #TODO 
         print "check_define(): not properly implemented"
         while self.current_token.type != Type.NEWLINE:
-            self.match()
+            self.position += 1
+            self.current_token = self.tokens[i]
             
-        self.match()
+        self.position += 1
+        self.current_token = self.tokens[i]
 
     def check_array_assignment(self):
         if self.current_token.type == Type.UNKNOWN:
