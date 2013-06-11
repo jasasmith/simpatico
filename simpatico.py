@@ -367,7 +367,7 @@ class Errors(object):
         self.whitespace_d[token.line_number] = "[WHITESPACE] At " + \
                 "position %d: expected %d whitespace, found %d " % (
                 token.get_position(), expected, token.get_spacing_left())
-
+        
     def line_length(self, line_number, length):
         self.total += 1
         self.line_length_d[line_number] = "line is %d chars long" % length
@@ -421,9 +421,9 @@ class Errors(object):
         if not self.total:
             return "no errors found"
         counts = [len(error_type.keys()) for error_type in [
-                self.braces_d, self.whitespace_d,
-                self.line_length_d, self.naming_d, self.func_length_d,
-                self.comments_d]]
+                self.braces_d, self.whitespace_d, self.comments_d,
+                self.naming_d, self.func_length_d, self.line_length_d
+                ]]
         for i in range(len(counts)):
             if counts[i] > 5:
                 counts[i] = 5
@@ -498,6 +498,9 @@ class Styler(object):
             # previous was a newline but shouldn't have been
             if self.previous_token().type in [Type.NEWLINE, Type.COMMENT]:
                 if pre_newline == NO_NEWLINE:
+                    err = Errors.IF
+                    if self.peek().type == Type.ELSE:
+                        err = Errors.ELSE
                     self.errors.braces(self.current_token, Errors.IF)
             else: #previous wasn't a newline but should've been
                 if pre_newline == MUST_NEWLINE:
@@ -523,7 +526,10 @@ class Styler(object):
         elif post_newline == MUST_NEWLINE \
                 and self.current_token.type not in [Type.NEWLINE,
                 Type.LINE_CONT, Type.COMMENT]:
-            self.errors.braces(self.previous_token(), Errors.RUNON)
+            if self.tokens[self.position-2].type == Type.ELSE:
+                self.errors.braces(self.previous_token(), Errors.ELSE)
+            else:
+                self.errors.braces(self.previous_token(), Errors.RUNON)
         # consume all the newlines that may or may not have been there
         while self.current_token.type in [Type.NEWLINE, Type.LINE_CONT,
                 Type.COMMENT]:
@@ -1086,7 +1092,7 @@ if __name__ == '__main__':
         print "no arguments given"
     for i in range(1, len(sys.argv)):
         if sys.argv[i].strip():
-            print 'Parsing %s...' % sys.argv[i],
+            print 'Parsing %s...' % sys.argv[i]
             style = Styler(sys.argv[i])
             print style.errors
 
