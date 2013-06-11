@@ -442,6 +442,7 @@ class Styler(object):
         line_number = 0
         self.infile = open(filename, "r")
         for line in self.infile:
+            line_number += 1
             if len(line) > 79:
                 self.errors.line_length(line_number, len(line))
         self.infile.close()
